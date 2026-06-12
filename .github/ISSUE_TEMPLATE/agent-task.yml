@@ -1,0 +1,109 @@
+name: Agent-ready task
+description: Create a structured engineering issue for Matt Pocock skills / agent workflows.
+title: "[Task]: "
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for implementation work that may later be triaged into `ready-for-agent` or `ready-for-human`.
+        Write the issue as a vertical slice: small, testable, and independently mergeable.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What project, feature, bug, or prior decision does this relate to?
+      placeholder: |
+        Example:
+        This affects the auth middleware in `src/auth`.
+        Related ADR: `docs/adr/0003-session-boundaries.md`.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Goal
+      description: What is wrong, missing, slow, confusing, unsafe, or valuable to add?
+      placeholder: |
+        Describe the current state and the desired outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: what-to-build
+    attributes:
+      label: What to build
+      description: Describe the end-to-end behavior, not just a layer-by-layer task list.
+      placeholder: |
+        Build a narrow vertical slice that proves the full path:
+        input -> domain logic -> persistence -> API/UI -> tests.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: Each item must be objectively verifiable.
+      value: |
+        - [ ] 
+        - [ ] 
+        - [ ] 
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      description: What commands, tests, screenshots, logs, or manual checks prove this works?
+      placeholder: |
+        Example:
+        - `npm test`
+        - `cargo test`
+        - `pnpm typecheck`
+        - Manual check: create X, confirm Y appears.
+    validations:
+      required: true
+  - type: textarea
+    id: blocked-by
+    attributes:
+      label: Blocked by
+      description: Link blocking issues, PRs, decisions, credentials, or write "None - can start immediately".
+      value: "None - can start immediately"
+    validations:
+      required: true
+  - type: textarea
+    id: relevant-files
+    attributes:
+      label: Relevant files / docs
+      description: Point agents to the likely code, docs, ADRs, tests, or configs.
+      placeholder: |
+        - `src/...`
+        - `tests/...`
+        - `CONTEXT.md`
+        - `docs/adr/...`
+    validations:
+      required: false
+  - type: dropdown
+    id: expected-owner
+    attributes:
+      label: Expected implementation path
+      description: Initial guess only. Final state should be set by triage.
+      options:
+        - AFK agent can likely implement
+        - Human judgment needed
+        - Unsure
+      default: 2
+    validations:
+      required: true
+  - type: checkboxes
+    id: agent-readiness
+    attributes:
+      label: Agent-readiness checklist
+      description: Check what is already true. Triage can fill gaps later.
+      options:
+        - label: The desired behavior is clear.
+        - label: Acceptance criteria are testable.
+        - label: Relevant files or modules are named.
+        - label: External credentials/manual access are not required.
+        - label: The issue can be completed as a narrow vertical slice.
