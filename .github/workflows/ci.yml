@@ -25,17 +25,22 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Initialize vendored submodules (best-effort, non-recursive)
-        # The four upstreams are vendored as submodules but excluded from the
-        # workspace build graph, so the build does not require their contents.
-        # We init them non-recursively because an upstream (SparrowOntology)
-        # ships a broken nested gitlink with no URL that breaks recursive
-        # checkout. Failure here must not fail CI.
+      - name: Initialize SparrowDB submodule (required)
+        # Phase 1 integrates the vendored SparrowDB store: `kanbrick-store`
+        # path-depends on `crates/sparrowdb`, so its contents ARE required to
+        # build. Init it non-recursively (its internal crates live in the same
+        # repo, so one init fetches them all). Fail the job if this fails.
+        run: git submodule update --init --depth 1 crates/sparrowdb
+
+      - name: Initialize remaining vendored submodules (best-effort)
+        # ironclaw / tachyon-mesh / sparrowdb-ontology are integrated in later
+        # phases and are excluded from the current build graph. SparrowOntology
+        # ships a broken nested gitlink that breaks recursive checkout, so this
+        # is non-recursive and must not fail CI.
         continue-on-error: true
         run: |
           git submodule update --init --depth 1 \
-            crates/sparrowdb crates/sparrowdb-ontology \
-            crates/ironclaw crates/tachyon-mesh \
+            crates/sparrowdb-ontology crates/ironclaw crates/tachyon-mesh \
             || echo "::warning::Some vendored submodules failed to init; they are excluded from the build graph."
 
       - name: Install Rust toolchain (pinned via rust-toolchain.toml)

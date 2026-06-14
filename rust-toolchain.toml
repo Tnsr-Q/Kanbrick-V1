@@ -1,9 +1,16 @@
 # Pinned toolchain for the whole workspace.
 #
-# graphify-rs (L4 — Map) is edition 2024 and requires rustc >= 1.85. Ironclaw
-# and Tachyon-Mesh declare 1.75, SparrowDB is unconstrained — so pinning to the
-# highest requirement (1.85) lets every member compile under one toolchain.
+# Highest-requirement-wins across the four vendored upstreams:
+#   * Ironclaw / Tachyon-Mesh — declare rustc >= 1.75
+#   * graphify-rs (L4 — Map)  — edition 2024, requires rustc >= 1.85
+#   * SparrowDB (L3 — Brain)  — pins `stable` and uses APIs stabilized after
+#       1.85 (e.g. `u64::is_multiple_of`, stabilized in 1.87), so it does NOT
+#       build on 1.85 despite the Phase 0 assumption that it was unconstrained.
+#
+# We therefore pin to a recent stable that satisfies every upstream. 1.94.1 is
+# the stable SparrowDB's own `rust-toolchain.toml` resolves to and is verified
+# to build the whole workspace including the vendored store.
 [toolchain]
-channel = "1.85.0"
+channel = "1.94.1"
 components = ["rustfmt", "clippy"]
 targets = ["wasm32-wasip1"]

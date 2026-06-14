@@ -9,11 +9,13 @@
 // ---------------------------------------------------------------------------
 // CONSTRAINTS & INDEXES
 // ---------------------------------------------------------------------------
-CREATE CONSTRAINT person_email_unique IF NOT EXISTS FOR (p:Person) REQUIRE p.email IS UNIQUE;
-CREATE CONSTRAINT company_id_unique IF NOT EXISTS FOR (c:Company) REQUIRE c.company_id IS UNIQUE;
-CREATE CONSTRAINT segment_name_unique IF NOT EXISTS FOR (s:Segment) REQUIRE s.name IS UNIQUE;
-CREATE INDEX person_clearance IF NOT EXISTS FOR (p:Person) ON (p.clearance_level);
-CREATE INDEX person_name IF NOT EXISTS FOR (p:Person) ON (p.full_name);
+// Schema DDL (uniqueness constraints + lookup indexes) is owned by migration
+// v001 (`kanbrick-store::schema::schema_statements`) and applied before this
+// data file is loaded. SparrowDB supports the legacy DDL grammar
+// (`CREATE CONSTRAINT ON (n:Label) ASSERT n.prop IS UNIQUE`) rather than the
+// newer `... IF NOT EXISTS FOR ... REQUIRE ...` form, so the statements that
+// previously lived here have been moved into the migration to keep this file
+// loadable as pure data. See issue #8 (HITL).
 
 // ---------------------------------------------------------------------------
 // SEGMENT NODES
@@ -152,17 +154,26 @@ CREATE (bwk:Company {
 // ---------------------------------------------------------------------------
 // SEGMENT ← COMPANY RELATIONSHIPS
 // ---------------------------------------------------------------------------
-MATCH (s:Segment {code: "TLS"}), (c:Company) WHERE c.company_id IN ["JMTS","MCON","AAG","LTI","ATS"]
-CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
+// SparrowDB supports `MATCH (a {inline}), (b {inline}) CREATE (a)-[:R]->(b)`
+// but not `MATCH ... WHERE x IN [...] CREATE ...`, so the IN-list assignments
+// are expanded into one inline-filtered statement per company. See issue #8.
 
-MATCH (s:Segment {code: "IND"}), (c:Company) WHERE c.company_id IN ["KEEP","ASI"]
-CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
+// Testing & Lab Services (TLS): JMTS, MCON, AAG, LTI, ATS
+MATCH (s:Segment {code: "TLS"}), (c:Company {company_id: "JMTS"}) CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
+MATCH (s:Segment {code: "TLS"}), (c:Company {company_id: "MCON"}) CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
+MATCH (s:Segment {code: "TLS"}), (c:Company {company_id: "AAG"}) CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
+MATCH (s:Segment {code: "TLS"}), (c:Company {company_id: "LTI"}) CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
+MATCH (s:Segment {code: "TLS"}), (c:Company {company_id: "ATS"}) CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
 
-MATCH (s:Segment {code: "MFG"}), (c:Company {company_id: "DFPG"})
-CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
+// Industrial Distribution (IND): KEEP, ASI
+MATCH (s:Segment {code: "IND"}), (c:Company {company_id: "KEEP"}) CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
+MATCH (s:Segment {code: "IND"}), (c:Company {company_id: "ASI"}) CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
 
-MATCH (s:Segment {code: "STR"}), (c:Company {company_id: "BWK"})
-CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
+// Manufacturing (MFG): DFPG
+MATCH (s:Segment {code: "MFG"}), (c:Company {company_id: "DFPG"}) CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
+
+// Strategic Programs (STR): BWK
+MATCH (s:Segment {code: "STR"}), (c:Company {company_id: "BWK"}) CREATE (c)-[:BELONGS_TO_SEGMENT]->(s);
 
 
 // ===========================================================================
@@ -360,23 +371,15 @@ MATCH (brian:Person {email: "brian.humphrey@kanbrick.com"}),
 CREATE (brian)-[:REPORTS_TO {relationship: "direct"}]->(tracy);
 
 // --- L4 → L5: All strategic leaders report to President ---
-MATCH (p:Person), (brian:Person {email: "brian.humphrey@kanbrick.com"})
-WHERE p.email IN [
-  "matt.berns@kanbrick.com",
-  "andrea.lewis@kanbrick.com",
-  "marcus.hall@kanbrick.com",
-  "peter.nash@kanbrick.com"
-]
-CREATE (p)-[:REPORTS_TO {relationship: "direct"}]->(brian);
+MATCH (p:Person {email: "matt.berns@kanbrick.com"}), (brian:Person {email: "brian.humphrey@kanbrick.com"}) CREATE (p)-[:REPORTS_TO {relationship: "direct"}]->(brian);
+MATCH (p:Person {email: "andrea.lewis@kanbrick.com"}), (brian:Person {email: "brian.humphrey@kanbrick.com"}) CREATE (p)-[:REPORTS_TO {relationship: "direct"}]->(brian);
+MATCH (p:Person {email: "marcus.hall@kanbrick.com"}), (brian:Person {email: "brian.humphrey@kanbrick.com"}) CREATE (p)-[:REPORTS_TO {relationship: "direct"}]->(brian);
+MATCH (p:Person {email: "peter.nash@kanbrick.com"}), (brian:Person {email: "brian.humphrey@kanbrick.com"}) CREATE (p)-[:REPORTS_TO {relationship: "direct"}]->(brian);
 
 // --- L3 → L4: Segment leads report to CSO (Peter Nash / P.N.) ---
-MATCH (p:Person), (peter:Person {email: "peter.nash@kanbrick.com"})
-WHERE p.email IN [
-  "tyler.begemann@kanbrick.com",
-  "blake.richardson@kanbrick.com",
-  "sloan.allen@kanbrick.com"
-]
-CREATE (p)-[:REPORTS_TO {relationship: "direct"}]->(peter);
+MATCH (p:Person {email: "tyler.begemann@kanbrick.com"}), (peter:Person {email: "peter.nash@kanbrick.com"}) CREATE (p)-[:REPORTS_TO {relationship: "direct"}]->(peter);
+MATCH (p:Person {email: "blake.richardson@kanbrick.com"}), (peter:Person {email: "peter.nash@kanbrick.com"}) CREATE (p)-[:REPORTS_TO {relationship: "direct"}]->(peter);
+MATCH (p:Person {email: "sloan.allen@kanbrick.com"}), (peter:Person {email: "peter.nash@kanbrick.com"}) CREATE (p)-[:REPORTS_TO {relationship: "direct"}]->(peter);
 
 // --- L2 → L3: Analysts report to operational leaders ---
 // Samantha Jordan (S.J.) → Tyler Begemann (Testing & Lab lead, largest segment)
@@ -408,14 +411,16 @@ MATCH (brian:Person {email: "brian.humphrey@kanbrick.com"}), (c:Company)
 CREATE (brian)-[:MANAGES {scope: "operational_oversight"}]->(c);
 
 // Tyler Begemann → Testing & Lab segment (5 companies)
-MATCH (p:Person {email: "tyler.begemann@kanbrick.com"}), (c:Company)
-WHERE c.company_id IN ["JMTS", "MCON", "AAG", "LTI", "ATS"]
-CREATE (p)-[:MANAGES {scope: "segment_lead"}]->(c);
+MATCH (p:Person {email: "tyler.begemann@kanbrick.com"}), (c:Company {company_id: "JMTS"}) CREATE (p)-[:MANAGES {scope: "segment_lead"}]->(c);
+MATCH (p:Person {email: "tyler.begemann@kanbrick.com"}), (c:Company {company_id: "MCON"}) CREATE (p)-[:MANAGES {scope: "segment_lead"}]->(c);
+MATCH (p:Person {email: "tyler.begemann@kanbrick.com"}), (c:Company {company_id: "AAG"}) CREATE (p)-[:MANAGES {scope: "segment_lead"}]->(c);
+MATCH (p:Person {email: "tyler.begemann@kanbrick.com"}), (c:Company {company_id: "LTI"}) CREATE (p)-[:MANAGES {scope: "segment_lead"}]->(c);
+MATCH (p:Person {email: "tyler.begemann@kanbrick.com"}), (c:Company {company_id: "ATS"}) CREATE (p)-[:MANAGES {scope: "segment_lead"}]->(c);
 
 // Blake Richardson → Industrial Distribution + Manufacturing segments
-MATCH (p:Person {email: "blake.richardson@kanbrick.com"}), (c:Company)
-WHERE c.company_id IN ["KEEP", "ASI", "DFPG"]
-CREATE (p)-[:MANAGES {scope: "segment_lead"}]->(c);
+MATCH (p:Person {email: "blake.richardson@kanbrick.com"}), (c:Company {company_id: "KEEP"}) CREATE (p)-[:MANAGES {scope: "segment_lead"}]->(c);
+MATCH (p:Person {email: "blake.richardson@kanbrick.com"}), (c:Company {company_id: "ASI"}) CREATE (p)-[:MANAGES {scope: "segment_lead"}]->(c);
+MATCH (p:Person {email: "blake.richardson@kanbrick.com"}), (c:Company {company_id: "DFPG"}) CREATE (p)-[:MANAGES {scope: "segment_lead"}]->(c);
 
 // Sloan Allen → Strategic Programs (Build with Kanbrick)
 MATCH (p:Person {email: "sloan.allen@kanbrick.com"}), (c:Company {company_id: "BWK"})
