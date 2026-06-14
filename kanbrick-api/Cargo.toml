@@ -7,7 +7,28 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "kanbrick_api"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kanbrick-api"
+path = "src/main.rs"
+
 [dependencies]
 kanbrick-core.workspace = true
 kanbrick-store.workspace = true
 kanbrick-auth.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tempfile = "3"
