@@ -11,3 +11,17 @@ repository.workspace = true
 kanbrick-core.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+
+# Vendored SparrowDB (L3 — Brain). Path dependencies into the git submodule at
+# `crates/sparrowdb`, which is excluded from this workspace but built as an
+# external path dependency. `sparrowdb` is the top-level handle; the
+# `sparrowdb-execution` crate is pulled in directly to name the `Value` type
+# used by the parameterized-query API (`execute_with_params`).
+sparrowdb = { path = "../crates/sparrowdb/crates/sparrowdb" }
+sparrowdb-execution = { path = "../crates/sparrowdb/crates/sparrowdb-execution" }
+
+[dev-dependencies]
+tempfile = "3"

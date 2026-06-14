@@ -1,40 +1,30 @@
 //! # kanbrick-store
 //!
-//! Embedded SparrowDB lifecycle wrapper and schema migrations.
+//! Embedded SparrowDB lifecycle wrapper, firm schema, parameterized queries,
+//! and versioned migrations.
 //!
 //! Layer 3 (Brain) — wraps the vendored `crates/sparrowdb` submodule.
 //!
-//! Phase 0 scaffold: this crate compiles and exposes its public surface, but
-//! the upstream integration is implemented in a later phase. See the GitHub
-//! issue tracker for the phase that fills this in.
+//! ## Surface
+//!
+//! * [`Store`] — open/close lifecycle and the query surface (issues #6, #9).
+//! * [`schema`] — typed `PersonNode`/`CompanyNode`/`SegmentNode` and schema DDL
+//!   (issue #8).
+//! * [`value::Params`] — injection-safe bound query parameters (issue #9).
+//! * [`migrations::Migrator`] — versioned schema & seed migrations (issue #10).
+//! * [`seed`] — Cypher seed-file loading (issue #11).
 
-use kanbrick_core::Result;
+pub mod migrations;
+pub mod schema;
+pub mod seed;
+pub mod store;
+pub mod value;
 
-/// Handle to the embedded graph store. Phase 1 wires this to SparrowDB.
-#[derive(Debug, Default)]
-pub struct Store {
-    path: std::path::PathBuf,
-}
+pub use migrations::{Migration, MigrationOutcome, Migrator};
+pub use schema::{CompanyNode, PersonNode, SegmentNode};
+pub use store::Store;
+pub use value::Params;
 
-impl Store {
-    /// Open (or prepare to open) a store rooted at `path`.
-    pub fn open(path: impl Into<std::path::PathBuf>) -> Result<Self> {
-        Ok(Store { path: path.into() })
-    }
-
-    /// Filesystem location backing this store.
-    pub fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn open_records_path() {
-        let s = Store::open("/tmp/firm.db").unwrap();
-        assert_eq!(s.path().to_str(), Some("/tmp/firm.db"));
-    }
-}
+// Re-export the SparrowDB result type consumers need when reading raw query
+// results without going through typed deserialization.
+pub use sparrowdb::QueryResult;

@@ -7,17 +7,23 @@
 //! * [`ClearanceLevel`] — the firm's five-tier access model (L1..L5).
 //! * [`FirmContext`] — the security identity propagated on every request.
 //! * [`NodeLabel`] / [`EdgeLabel`] — the graph schema vocabulary.
-//! * [`Error`] / [`Result`] — the shared error type.
+//! * [`PersonId`] / [`CompanyId`] / [`SegmentCode`] — typed identifiers.
+//! * [`Status`] — entity lifecycle status.
+//! * [`Error`] / [`ErrorKind`] / [`Result`] — the shared error types.
 
 pub mod clearance;
 pub mod context;
 pub mod error;
+pub mod ids;
 pub mod schema;
+pub mod status;
 
 pub use clearance::ClearanceLevel;
 pub use context::FirmContext;
-pub use error::{Error, Result};
+pub use error::{Error, ErrorKind, Result};
+pub use ids::{CompanyId, PersonId, SegmentCode};
 pub use schema::{EdgeLabel, NodeLabel};
+pub use status::Status;
 
 /// The firm identifier used throughout Kanbrick-V1. Always `"kanbrick"` for V1.
 pub const FIRM_ID: &str = "kanbrick";
