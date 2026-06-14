@@ -20,15 +20,23 @@ jobs:
     name: Build, test, lint, format
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Non-recursive on purpose: an upstream (SparrowOntology) contains a
-          # broken nested gitlink with no URL, which breaks recursive checkout.
-          # The vendored crates are excluded from the workspace anyway, so the
-          # top-level submodule contents are all CI needs.
-          submodules: true
           fetch-depth: 1
+
+      - name: Initialize vendored submodules (best-effort, non-recursive)
+        # The four upstreams are vendored as submodules but excluded from the
+        # workspace build graph, so the build does not require their contents.
+        # We init them non-recursively because an upstream (SparrowOntology)
+        # ships a broken nested gitlink with no URL that breaks recursive
+        # checkout. Failure here must not fail CI.
+        continue-on-error: true
+        run: |
+          git submodule update --init --depth 1 \
+            crates/sparrowdb crates/sparrowdb-ontology \
+            crates/ironclaw crates/tachyon-mesh \
+            || echo "::warning::Some vendored submodules failed to init; they are excluded from the build graph."
 
       - name: Install Rust toolchain (pinned via rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@stable
