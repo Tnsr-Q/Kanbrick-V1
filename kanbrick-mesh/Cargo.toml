@@ -1,0 +1,13 @@
+[package]
+name = "kanbrick-mesh"
+description = "Tachyon-Mesh runtime integration and WASM guest dispatch."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kanbrick-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

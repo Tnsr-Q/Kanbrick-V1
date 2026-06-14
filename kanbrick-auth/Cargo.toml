@@ -1,0 +1,16 @@
+[package]
+name = "kanbrick-auth"
+description = "Ironclaw integration: JWT issuance/validation and clearance enforcement."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kanbrick-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true

@@ -1,0 +1,94 @@
+# Kanbrick-V1 — unified Rust workspace ("One Command" build).
+#
+# The four upstream source repositories are vendored as git submodules under
+# `crates/` (sparrowdb, sparrowdb-ontology, ironclaw, tachyon-mesh). They are
+# independent Cargo workspaces with their own lockfiles and dependency graphs,
+# so they are intentionally **excluded** from this workspace's build graph.
+# They are progressively integrated through the kanbrick-* wrapper crates in
+# later phases (see docs/ and the GitHub issue tracker). Phase 0 only needs the
+# wrapper crates and guest scaffolds to compile cleanly.
+
+[workspace]
+resolver = "2"
+members = [
+    "kanbrick-core",        # Shared types, errors, FirmContext, ClearanceLevel
+    "kanbrick-store",        # SparrowDB lifecycle wrapper (L3 — Brain)
+    "kanbrick-auth",         # Ironclaw integration + clearance (L1 — Face/Guard)
+    "kanbrick-mesh",         # Tachyon-Mesh runtime integration (L2 — Nerves)
+    "kanbrick-discovery",    # graphify-rs graph analysis (L4 — Map)
+    "kanbrick-api",          # HTTP API surface
+    "kanbrick-cli",          # CLI tooling (seed loader, admin)
+    "guests/valuation",      # WASM guest scaffold — valuation models
+    "guests/reporting",      # WASM guest scaffold — report generation
+    "guests/compliance",     # WASM guest scaffold — compliance checks
+]
+# Vendored upstreams are independent workspaces; keep them out of our graph.
+exclude = [
+    "crates/sparrowdb",
+    "crates/sparrowdb-ontology",
+    "crates/ironclaw",
+    "crates/tachyon-mesh",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Tnsr-Q/Kanbrick-V1"
+authors = ["Kanbrick-V1 contributors"]
+
+# ---------------------------------------------------------------------------
+# Unified dependency versions (Issue #4).
+#
+# Versions reconciled across the four vendored upstreams so every member crate
+# resolves a single shared version. Notable reconciliations:
+#   * tokio      — all upstreams use "1"               → "1"
+#   * serde      — all upstreams use "1"               → "1"
+#   * axum       — ironclaw 0.7 vs tachyon-mesh 0.8    → "0.8" (newest wins)
+#   * clap       — sparrowdb 4 vs ironclaw 4.5         → "4.5"
+#   * thiserror  — ironclaw 2.0                        → "2.0"
+#   * wasmtime   — tachyon-mesh 45.0.0                 → "45"
+# Entries unused by Phase 0 scaffolds are still declared here so later phases
+# inherit the pinned versions via `<dep>.workspace = true`.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+# Internal crates
+kanbrick-core = { path = "kanbrick-core", version = "0.1.0" }
+kanbrick-store = { path = "kanbrick-store", version = "0.1.0" }
+kanbrick-auth = { path = "kanbrick-auth", version = "0.1.0" }
+kanbrick-mesh = { path = "kanbrick-mesh", version = "0.1.0" }
+kanbrick-discovery = { path = "kanbrick-discovery", version = "0.1.0" }
+
+# Async runtime & web
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+axum = "0.8"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Errors & diagnostics
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Common utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.5", features = ["derive"] }
+
+# Auth (integrated in Phase 2 via the vendored ironclaw submodule)
+jsonwebtoken = "9"
+argon2 = "0.5"
+
+# WASM runtime (integrated in Phase 3 via the vendored tachyon-mesh submodule)
+wasmtime = "45"
+
+# Discovery (integrated in Phase 4; published on crates.io, edition 2024 / rustc >= 1.85)
+graphify-rs = "0.8"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

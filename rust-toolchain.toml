@@ -1,0 +1,9 @@
+# Pinned toolchain for the whole workspace.
+#
+# graphify-rs (L4 — Map) is edition 2024 and requires rustc >= 1.85. Ironclaw
+# and Tachyon-Mesh declare 1.75, SparrowDB is unconstrained — so pinning to the
+# highest requirement (1.85) lets every member compile under one toolchain.
+[toolchain]
+channel = "1.85.0"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-wasip1"]

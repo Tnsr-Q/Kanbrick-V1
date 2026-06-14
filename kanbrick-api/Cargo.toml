@@ -1,0 +1,13 @@
+[package]
+name = "kanbrick-api"
+description = "HTTP API surface for Kanbrick-V1."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kanbrick-core.workspace = true
+kanbrick-store.workspace = true
+kanbrick-auth.workspace = true

@@ -1,0 +1,16 @@
+[submodule "crates/sparrowdb"]
+	path = crates/sparrowdb
+	url = https://github.com/ryaker/SparrowDB
+	shallow = true
+[submodule "crates/sparrowdb-ontology"]
+	path = crates/sparrowdb-ontology
+	url = https://github.com/ryaker/SparrowOntology
+	shallow = true
+[submodule "crates/ironclaw"]
+	path = crates/ironclaw
+	url = https://github.com/JoasASantos/ironclaw
+	shallow = true
+[submodule "crates/tachyon-mesh"]
+	path = crates/tachyon-mesh
+	url = https://github.com/astorise/Tachyon-Mesh
+	shallow = true

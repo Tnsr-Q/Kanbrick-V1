@@ -1,5 +1,23 @@
+# Rust build artifacts
 /target
+**/target
 **/*.rs.bk
+Cargo.lock.bak
+
+# graphify-rs working dir
 .graphify/
+
+# Runtime graph databases (keep the directory + README, ignore the data)
+*.db
 *.db/
+graph/*.db
+graph/*.db/
+!graph/.gitkeep
+!graph/README.md
+
+# Environment / secrets
 .env
+*.env
+
+# OS / editor cruft
+.DS_Store

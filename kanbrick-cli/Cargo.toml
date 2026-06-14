@@ -1,0 +1,17 @@
+[package]
+name = "kanbrick-cli"
+description = "CLI tooling for Kanbrick-V1 (seed loader, admin)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kanbrick-cli"
+path = "src/main.rs"
+
+[dependencies]
+kanbrick-core.workspace = true
+kanbrick-store.workspace = true
+clap.workspace = true
