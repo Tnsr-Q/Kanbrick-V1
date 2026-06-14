@@ -23,7 +23,11 @@ jobs:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # Non-recursive on purpose: an upstream (SparrowOntology) contains a
+          # broken nested gitlink with no URL, which breaks recursive checkout.
+          # The vendored crates are excluded from the workspace anyway, so the
+          # top-level submodule contents are all CI needs.
+          submodules: true
           fetch-depth: 1
 
       - name: Install Rust toolchain (pinned via rust-toolchain.toml)
