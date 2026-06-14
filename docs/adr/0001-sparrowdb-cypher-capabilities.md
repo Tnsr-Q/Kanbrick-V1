@@ -44,6 +44,7 @@ was confirmed by running queries against the seeded 12-person firm graph.
 | `count(DISTINCT x)` | `DISTINCT` is an unexpected token | De-duplicate in Rust. |
 | Fixed patterns of ≥ 3 relationship hops | Returned empty | Use variable-length `*` instead (which works). |
 | Column alias to a **different** name on a bare-node projection | `RETURN p.clearance_level AS clearance` returns a `Null` cell (but `RETURN p.clearance_level` returns the value, and `AS <same-suffix>` works) | Don't rename via `AS` on bare-node matches. Project un-aliased and rely on the store's row mapper, which strips the `p.` prefix onto struct field names that match the property. (Aliasing *does* work in relationship/traversal queries.) |
+| Boolean properties | Stored `true`/`false`, read back as integer `1`/`0` | Store and deserialize boolean-ish flags as `i64` (1/0), not `bool`. |
 
 ## Decision
 

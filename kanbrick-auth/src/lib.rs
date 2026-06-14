@@ -14,15 +14,24 @@
 //! * [`password`] — Argon2id password hashing (PRD 2.5).
 //! * [`login`] — email + password → JWT login flow (issue #15).
 //! * [`clearance`] — the `require_clearance` gate (issue #16).
+//! * [`scope`] — clearance-scoped data visibility (issue #17).
+//! * [`guarded`] — the audited, clearance-filtering query interceptor (issue #18).
 //! * [`audit`] — per-query audit logging (issue #19).
+//! * [`apikey`] — scoped, rotatable service API keys (issue #20).
 
+pub mod apikey;
 pub mod audit;
 pub mod clearance;
+pub mod guarded;
 pub mod jwt;
 pub mod login;
 pub mod password;
+pub mod scope;
 
+pub use apikey::{ApiKeyService, IssuedKey};
 pub use audit::AuditLog;
 pub use clearance::require_clearance;
+pub use guarded::GuardedStore;
 pub use jwt::{Claims, JwtAuthenticator};
 pub use login::LoginService;
+pub use scope::ClearanceScope;
