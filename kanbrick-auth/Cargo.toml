@@ -9,8 +9,21 @@ repository.workspace = true
 
 [dependencies]
 kanbrick-core.workspace = true
+kanbrick-store.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid = { workspace = true, features = ["v5"] }
+
+# Auth primitives. Ironclaw is a binary crate (no library target), so rather
+# than depending on it we build on the same primitives it uses — exactly the
+# PRD's stated mitigation ("build the clearance layer on Ironclaw primitives").
+jsonwebtoken.workspace = true
+argon2 = { workspace = true, features = ["std"] }
+sha2 = "0.10"
 
 [dev-dependencies]
 uuid.workspace = true
+tempfile = "3"
