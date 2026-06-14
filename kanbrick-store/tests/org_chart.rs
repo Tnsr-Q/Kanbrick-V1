@@ -4,11 +4,19 @@
 //! hierarchy end-to-end: REPORTS_TO chains to the CEO, MANAGES edges, and
 //! BELONGS_TO_SEGMENT edges all cohere with the schema, store, and seed data.
 //!
-//! SparrowDB (this pinned build) does not evaluate variable-length paths or
-//! `NOT (a)-[:R]->()` existence predicates, and caps fixed-length pattern
-//! traversal at two hops. So the REPORTS_TO hierarchy is verified by pulling the
-//! one-hop adjacency (which is fully supported) and computing reachability and
-//! depth in Rust — a stricter check than a single traversal query.
+//! Verification uses two complementary approaches:
+//!
+//! * `reaches_ceo_natively_via_variable_length` exercises SparrowDB's native
+//!   variable-length traversal (`-[:REPORTS_TO*1..4]->`), projecting the reached
+//!   node set.
+//! * The adjacency-based tests pull the one-hop REPORTS_TO edges and compute
+//!   reachability and depth in Rust — a defense-in-depth cross-check that also
+//!   covers the two query forms SparrowDB does NOT support in this pinned build:
+//!   aggregating `count()` directly over a variable-length path, and inline
+//!   `NOT (a)-[:R]->()` negation.
+//!
+//! The full verified capability matrix lives in
+//! `docs/adr/0001-sparrowdb-cypher-capabilities.md`.
 
 use std::collections::HashMap;
 
@@ -20,6 +28,12 @@ use serde::Deserialize;
 struct ReportsEdge {
     child: String,
     parent: String,
+}
+
+/// A single projected `email` column.
+#[derive(Debug, Deserialize)]
+struct PersonEmail {
+    email: String,
 }
 
 /// Seed a fresh store with the firm schema + data and return it.
@@ -59,6 +73,37 @@ fn reports_to_map(store: &Store) -> HashMap<String, String> {
         );
     }
     map
+}
+
+/// SparrowDB evaluates variable-length traversal natively: projecting the
+/// reached nodes of `-[:REPORTS_TO*1..4]->` returns every non-CEO employee.
+/// (The row count is taken in Rust; aggregating `count()` directly over a
+/// variable-length path is unsupported in this build — see the ADR.)
+#[test]
+fn reaches_ceo_natively_via_variable_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = seeded_store(dir.path());
+
+    let reached: Vec<PersonEmail> = store
+        .query(
+            "MATCH (p:Person)-[:REPORTS_TO*1..4]->(ceo:Person {role: 'CEO'}) \
+             RETURN p.email AS email",
+            Params::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        reached.len(),
+        11,
+        "native variable-length traversal must reach all 11 non-CEO employees"
+    );
+    // The CEO is the target, never a member of the reached (source) set.
+    assert!(
+        !reached
+            .iter()
+            .any(|p| p.email == "tracy.brittcool@kanbrick.com"),
+        "the CEO must not appear in the set of people reaching the CEO"
+    );
 }
 
 /// The CEO is the org root (no manager) and every other employee has exactly
