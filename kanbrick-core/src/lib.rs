@@ -10,7 +10,10 @@
 //! * [`PersonId`] / [`CompanyId`] / [`SegmentCode`] — typed identifiers.
 //! * [`Status`] — entity lifecycle status.
 //! * [`Error`] / [`ErrorKind`] / [`Result`] — the shared error types.
+//! * [`abi`] — the host↔guest WASM ABI (traits + JSON DTOs) shared by the mesh
+//!   runtime and guests.
 
+pub mod abi;
 pub mod clearance;
 pub mod context;
 pub mod error;
