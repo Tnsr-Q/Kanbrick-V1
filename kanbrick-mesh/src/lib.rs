@@ -10,7 +10,10 @@
 //!
 //! ## Surface
 //!
-//! * [`MeshRuntime`] — the engine + guest registry; load `.wasm`, dispatch calls.
+//! * [`MeshRuntime`] — the engine + guest registry; load `.wasm`, dispatch calls,
+//!   and [`invoke`](MeshRuntime::invoke) guests with a host-authoritative context.
+//! * [`MeshHost`] — the host's [`HostFunctions`](kanbrick_core::abi::HostFunctions)
+//!   implementation servicing guest capability calls.
 //! * [`RuntimeLimits`] — per-guest sandbox limits (memory, fuel, timeout).
 //! * [`GuestInfo`] — a registered guest's name + version.
 //! * [`MeshError`] — the runtime error surface.
@@ -23,7 +26,9 @@
 //! [`docs/adr/0002-phase-3-wasm-runtime.md`]: https://github.com/Tnsr-Q/Kanbrick-V1/blob/main/docs/adr/0002-phase-3-wasm-runtime.md
 
 pub mod error;
+pub mod host;
 pub mod runtime;
 
 pub use error::{MeshError, Result};
+pub use host::MeshHost;
 pub use runtime::{GuestInfo, MeshRuntime, RuntimeLimits};

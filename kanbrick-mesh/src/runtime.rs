@@ -15,11 +15,20 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
+use kanbrick_core::abi::{GuestRequest, GuestResponse};
+use kanbrick_core::FirmContext;
+use wasmtime::{
+    Caller, Config, Engine, Extern, Instance, Linker, Module, Store, StoreLimits,
+    StoreLimitsBuilder,
+};
 use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::WasiCtxBuilder;
 
 use crate::error::{MeshError, Result};
+
+/// The import module name the host functions are published under; guests declare
+/// `#[link(wasm_import_module = "kanbrick")]` to use them.
+const HOST_MODULE: &str = "kanbrick";
 
 /// Per-guest sandbox limits. Defaults are the operator-approved values recorded
 /// in ADR-0002.
@@ -44,10 +53,14 @@ impl Default for RuntimeLimits {
     }
 }
 
-/// Store-local host state: the guest's WASI context plus its memory limiter.
+/// Store-local host state: the guest's WASI context, its memory limiter, and the
+/// host-authoritative [`FirmContext`] (JSON-encoded) the `kbk_ctx_*` imports
+/// expose to the guest (#23). `ctx_json` is empty for the raw [`MeshRuntime::dispatch`]
+/// path, which wires no context imports.
 struct HostState {
     wasi: WasiP1Ctx,
     limits: StoreLimits,
+    ctx_json: Vec<u8>,
 }
 
 /// A compiled guest in the registry.
@@ -137,53 +150,154 @@ impl MeshRuntime {
         self.registry.contains_key(name)
     }
 
-    /// Run guest `name` against `input`, returning the bytes it produces.
+    /// Run guest `name` against raw `input` bytes, returning the bytes it
+    /// produces. This is the low-level #21 substrate with **no** host context
+    /// or imports; see [`invoke`](Self::invoke) for the typed, context-bearing
+    /// entry point.
     ///
     /// A fresh, sandboxed instance is created for the call and dropped afterward.
     pub fn dispatch(&self, name: &str, input: &[u8]) -> Result<Vec<u8>> {
-        let guest = self
-            .registry
-            .get(name)
-            .ok_or_else(|| MeshError::GuestNotFound(name.to_string()))?;
-
-        let mut store = self.new_store()?;
+        let module = self.module(name)?;
+        let mut store = self.new_store(Vec::new())?;
         let mut linker: Linker<HostState> = Linker::new(&self.engine);
-        wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |s: &mut HostState| &mut s.wasi)
-            .map_err(|e| MeshError::Link(e.to_string()))?;
+        self.add_wasi(&mut linker)?;
+        let instance = self.instantiate_guest(&mut store, name, &module, &linker)?;
+        self.call_run(&mut store, &instance, name, input)
+    }
 
+    /// Invoke guest `name` on behalf of `ctx` with a typed [`GuestRequest`],
+    /// returning its [`GuestResponse`].
+    ///
+    /// The caller's [`FirmContext`] is **host-authoritative** (#23): it is held
+    /// by the host and exposed to the guest only through the read-only
+    /// `kbk_ctx_*` imports. Nothing in `request` can set or forge identity.
+    pub fn invoke(
+        &self,
+        name: &str,
+        ctx: &FirmContext,
+        request: &GuestRequest,
+    ) -> Result<GuestResponse> {
+        let input = request.to_json_bytes().map_err(|e| MeshError::BadOutput {
+            name: name.to_string(),
+            detail: format!("encoding request: {e}"),
+        })?;
+        let output = self.run_with_context(name, ctx, &input)?;
+        GuestResponse::from_json_bytes(&output).map_err(|e| MeshError::BadOutput {
+            name: name.to_string(),
+            detail: format!("decoding response: {e}"),
+        })
+    }
+
+    /// Run guest `name` against raw `input`, injecting `ctx` as the
+    /// host-authoritative [`FirmContext`] readable through the `kbk_ctx_*` host
+    /// imports. Returns the raw output bytes. ([`invoke`](Self::invoke) is the
+    /// typed wrapper.)
+    pub fn run_with_context(&self, name: &str, ctx: &FirmContext, input: &[u8]) -> Result<Vec<u8>> {
+        let ctx_json = serde_json::to_vec(ctx)
+            .map_err(|e| MeshError::Engine(format!("serializing firm context: {e}")))?;
+        let module = self.module(name)?;
+        let mut store = self.new_store(ctx_json)?;
+        let mut linker: Linker<HostState> = Linker::new(&self.engine);
+        self.add_wasi(&mut linker)?;
+        self.add_context_imports(&mut linker)?;
+        let instance = self.instantiate_guest(&mut store, name, &module, &linker)?;
+        self.call_run(&mut store, &instance, name, input)
+    }
+
+    /// Clone a registered guest's compiled module (cheap — `Module` is `Arc`-backed).
+    fn module(&self, name: &str) -> Result<Module> {
+        self.registry
+            .get(name)
+            .map(|g| g.module.clone())
+            .ok_or_else(|| MeshError::GuestNotFound(name.to_string()))
+    }
+
+    /// Add the locked-down WASIp1 host functions to `linker`.
+    fn add_wasi(&self, linker: &mut Linker<HostState>) -> Result<()> {
+        wasmtime_wasi::p1::add_to_linker_sync(linker, |s: &mut HostState| &mut s.wasi)
+            .map_err(|e| MeshError::Link(e.to_string()))
+    }
+
+    /// Publish the host-authoritative context imports (#23): `kbk_ctx_len` and
+    /// `kbk_ctx_read`, the *only* way a guest learns its caller's identity. There
+    /// is deliberately no import to *set* the context.
+    fn add_context_imports(&self, linker: &mut Linker<HostState>) -> Result<()> {
+        linker
+            .func_wrap(
+                HOST_MODULE,
+                "kbk_ctx_len",
+                |caller: Caller<'_, HostState>| -> u32 { caller.data().ctx_json.len() as u32 },
+            )
+            .map_err(|e| MeshError::Link(e.to_string()))?;
+        linker
+            .func_wrap(
+                HOST_MODULE,
+                "kbk_ctx_read",
+                |mut caller: Caller<'_, HostState>, ptr: u32| -> wasmtime::Result<()> {
+                    let json = caller.data().ctx_json.clone();
+                    let memory = match caller.get_export("memory") {
+                        Some(Extern::Memory(m)) => m,
+                        _ => return Err(wasmtime::Error::msg("guest has no exported memory")),
+                    };
+                    memory.write(&mut caller, ptr as usize, &json)?;
+                    Ok(())
+                },
+            )
+            .map_err(|e| MeshError::Link(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Instantiate `module` and run its `_initialize` (reactor) export if present.
+    fn instantiate_guest(
+        &self,
+        store: &mut Store<HostState>,
+        name: &str,
+        module: &Module,
+        linker: &Linker<HostState>,
+    ) -> Result<Instance> {
         let instance =
             linker
-                .instantiate(&mut store, &guest.module)
+                .instantiate(&mut *store, module)
                 .map_err(|e| MeshError::Instantiate {
                     name: name.to_string(),
                     detail: e.to_string(),
                 })?;
-
         // Reactor guests (cdylib) export `_initialize`; run it once if present.
-        if let Ok(init) = instance.get_typed_func::<(), ()>(&mut store, "_initialize") {
-            init.call(&mut store, ()).map_err(|e| MeshError::Trap {
+        if let Ok(init) = instance.get_typed_func::<(), ()>(&mut *store, "_initialize") {
+            init.call(&mut *store, ()).map_err(|e| MeshError::Trap {
                 name: name.to_string(),
                 detail: format!("_initialize: {e}"),
             })?;
         }
+        Ok(instance)
+    }
 
+    /// Drive the ADR-0002 calling convention: `kbk_alloc` input, write it,
+    /// `kbk_run`, then read back the packed `(ptr, len)` output region.
+    fn call_run(
+        &self,
+        store: &mut Store<HostState>,
+        instance: &Instance,
+        name: &str,
+        input: &[u8],
+    ) -> Result<Vec<u8>> {
         let memory =
             instance
-                .get_memory(&mut store, "memory")
+                .get_memory(&mut *store, "memory")
                 .ok_or_else(|| MeshError::MissingExport {
                     name: name.to_string(),
                     export: "memory".to_string(),
                     detail: "not exported".to_string(),
                 })?;
         let alloc = instance
-            .get_typed_func::<u32, u32>(&mut store, "kbk_alloc")
+            .get_typed_func::<u32, u32>(&mut *store, "kbk_alloc")
             .map_err(|e| MeshError::MissingExport {
                 name: name.to_string(),
                 export: "kbk_alloc".to_string(),
                 detail: e.to_string(),
             })?;
         let run = instance
-            .get_typed_func::<(u32, u32), u64>(&mut store, "kbk_run")
+            .get_typed_func::<(u32, u32), u64>(&mut *store, "kbk_run")
             .map_err(|e| MeshError::MissingExport {
                 name: name.to_string(),
                 export: "kbk_run".to_string(),
@@ -196,20 +310,20 @@ impl MeshRuntime {
         })?;
 
         let in_ptr = alloc
-            .call(&mut store, in_len)
+            .call(&mut *store, in_len)
             .map_err(|e| MeshError::Trap {
                 name: name.to_string(),
                 detail: format!("kbk_alloc: {e}"),
             })?;
         memory
-            .write(&mut store, in_ptr as usize, input)
+            .write(&mut *store, in_ptr as usize, input)
             .map_err(|e| MeshError::BadOutput {
                 name: name.to_string(),
                 detail: format!("writing input: {e}"),
             })?;
 
         let packed = run
-            .call(&mut store, (in_ptr, in_len))
+            .call(&mut *store, (in_ptr, in_len))
             .map_err(|e| MeshError::Trap {
                 name: name.to_string(),
                 detail: format!("kbk_run: {e}"),
@@ -219,7 +333,7 @@ impl MeshRuntime {
         let out_len = (packed & 0xffff_ffff) as usize;
         let mut out = vec![0u8; out_len];
         memory
-            .read(&store, out_ptr, &mut out)
+            .read(&*store, out_ptr, &mut out)
             .map_err(|e| MeshError::BadOutput {
                 name: name.to_string(),
                 detail: format!("reading {out_len} bytes at {out_ptr}: {e}"),
@@ -235,14 +349,22 @@ impl MeshRuntime {
         Ok(out)
     }
 
-    /// Build a fresh, sandboxed [`Store`] for a single dispatch.
-    fn new_store(&self) -> Result<Store<HostState>> {
+    /// Build a fresh, sandboxed [`Store`] for a single dispatch, carrying the
+    /// (possibly empty) host-authoritative context JSON.
+    fn new_store(&self, ctx_json: Vec<u8>) -> Result<Store<HostState>> {
         // Locked-down WASI: no preopened dirs, no network, no inherited stdio.
         let wasi = WasiCtxBuilder::new().build_p1();
         let limits = StoreLimitsBuilder::new()
             .memory_size(self.limits.max_memory_bytes)
             .build();
-        let mut store = Store::new(&self.engine, HostState { wasi, limits });
+        let mut store = Store::new(
+            &self.engine,
+            HostState {
+                wasi,
+                limits,
+                ctx_json,
+            },
+        );
         store.limiter(|s| &mut s.limits);
         store
             .set_fuel(self.limits.fuel)
@@ -341,5 +463,112 @@ mod tests {
         assert_eq!(rt.limits().max_memory_bytes, 64 * 1024 * 1024);
         assert_eq!(rt.limits().fuel, 1_000_000_000);
         assert_eq!(rt.limits().timeout, Duration::from_secs(5));
+    }
+
+    // ---- #23: host-authoritative FirmContext propagation. ----
+
+    /// A hermetic guest that imports the host context functions, reads the
+    /// injected [`FirmContext`] JSON, and returns it verbatim — proving the host
+    /// supplies identity and the guest can only *read* it.
+    const CTX_WAT: &str = r#"
+        (module
+          (import "kanbrick" "kbk_ctx_len" (func $ctx_len (result i32)))
+          (import "kanbrick" "kbk_ctx_read" (func $ctx_read (param i32)))
+          (memory (export "memory") 1)
+          (global $next (mut i32) (i32.const 1024))
+          (func (export "kbk_alloc") (param $len i32) (result i32)
+            (local $p i32)
+            global.get $next
+            local.set $p
+            global.get $next
+            local.get $len
+            i32.add
+            global.set $next
+            local.get $p)
+          (func (export "kbk_run") (param $ptr i32) (param $len i32) (result i64)
+            (local $clen i32)
+            (local $cptr i32)
+            call $ctx_len
+            local.set $clen
+            global.get $next
+            local.set $cptr
+            global.get $next
+            local.get $clen
+            i32.add
+            global.set $next
+            local.get $cptr
+            call $ctx_read
+            local.get $cptr
+            i64.extend_i32_u
+            i64.const 32
+            i64.shl
+            local.get $clen
+            i64.extend_i32_u
+            i64.or))
+    "#;
+
+    fn ctx(email: &str, clearance: kanbrick_core::ClearanceLevel) -> FirmContext {
+        FirmContext::new(uuid::Uuid::new_v4(), email, clearance)
+    }
+
+    fn runtime_with_ctx_probe() -> MeshRuntime {
+        let mut rt = MeshRuntime::new().unwrap();
+        rt.register_module("ctx", "0.0.0", CTX_WAT.as_bytes())
+            .unwrap();
+        rt
+    }
+
+    #[test]
+    fn run_with_context_exposes_host_authoritative_identity() {
+        let rt = runtime_with_ctx_probe();
+        let context = ctx("lead@kanbrick.com", kanbrick_core::ClearanceLevel::L4);
+        // Input is ignored by the probe; it returns the host-injected context.
+        let out = rt
+            .run_with_context("ctx", &context, b"ignored input")
+            .unwrap();
+        let seen: FirmContext = serde_json::from_slice(&out).unwrap();
+        assert_eq!(seen, context);
+    }
+
+    #[test]
+    fn guest_sees_exactly_the_context_the_host_injects() {
+        let rt = runtime_with_ctx_probe();
+        let a = ctx("a@kanbrick.com", kanbrick_core::ClearanceLevel::L2);
+        let b = ctx("b@kanbrick.com", kanbrick_core::ClearanceLevel::L5);
+        let seen_a: FirmContext =
+            serde_json::from_slice(&rt.run_with_context("ctx", &a, b"").unwrap()).unwrap();
+        let seen_b: FirmContext =
+            serde_json::from_slice(&rt.run_with_context("ctx", &b, b"").unwrap()).unwrap();
+        // Each guest run sees precisely the identity the host chose — nothing the
+        // guest does can change which context it is handed.
+        assert_eq!(seen_a, a);
+        assert_eq!(seen_b, b);
+        assert_ne!(seen_a.clearance, seen_b.clearance);
+    }
+
+    #[test]
+    fn invoke_round_trips_request_payload_through_a_guest() {
+        // The hermetic echo guest returns its input verbatim; because GuestRequest
+        // and GuestResponse share the `{ "payload": .. }` shape, echoing a request
+        // yields the matching response — exercising invoke()'s encode/decode.
+        let rt = runtime_with_echo();
+        let context = ctx("analyst@kanbrick.com", kanbrick_core::ClearanceLevel::L3);
+        let request = GuestRequest::new(serde_json::json!({"company_id": 7}));
+        let response = rt.invoke("echo", &context, &request).unwrap();
+        assert_eq!(response.payload, serde_json::json!({"company_id": 7}));
+    }
+
+    #[test]
+    fn invoke_on_unknown_guest_errors() {
+        let rt = MeshRuntime::new().unwrap();
+        let context = ctx("x@kanbrick.com", kanbrick_core::ClearanceLevel::L1);
+        let err = rt
+            .invoke(
+                "nope",
+                &context,
+                &GuestRequest::new(serde_json::Value::Null),
+            )
+            .unwrap_err();
+        assert!(matches!(err, MeshError::GuestNotFound(n) if n == "nope"));
     }
 }

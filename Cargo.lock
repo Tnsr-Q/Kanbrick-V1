@@ -1469,9 +1469,11 @@ name = "kanbrick-mesh"
 version = "0.1.0"
 dependencies = [
  "kanbrick-core",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "wasmtime",
  "wasmtime-wasi",
 ]
