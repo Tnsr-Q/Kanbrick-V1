@@ -39,4 +39,4 @@ pub use error::{MeshError, Result};
 pub use event::{EventBus, SubscriptionId};
 pub use host::MeshHost;
 pub use runtime::{GuestInfo, MeshRuntime, RuntimeLimits};
-pub use scheduler::{Scheduler, SchedulerConfig, TaskId, TaskStatus};
+pub use scheduler::{RetryPolicy, Scheduler, SchedulerConfig, TaskId, TaskStatus, TriggerHandle};

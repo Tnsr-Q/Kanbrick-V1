@@ -20,10 +20,11 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use kanbrick_core::abi::{GuestRequest, GuestResponse};
+use kanbrick_core::abi::{Event, GuestRequest, GuestResponse};
 use kanbrick_core::FirmContext;
 
 use crate::error::MeshError;
+use crate::event::{EventBus, SubscriptionId};
 use crate::MeshRuntime;
 
 /// A unique handle to a scheduled task.
@@ -77,6 +78,80 @@ impl Default for SchedulerConfig {
             per_guest_concurrency: 4,
             tick: Duration::from_millis(10),
         }
+    }
+}
+
+/// Exponential-backoff retry policy for a scheduled task (#26).
+#[derive(Debug, Clone, Copy)]
+pub struct RetryPolicy {
+    /// Maximum retries after the first attempt (`0` = no retry).
+    pub max_retries: u32,
+    /// Delay before the first retry.
+    pub base_delay: Duration,
+    /// Multiplier applied to the delay after each retry.
+    pub factor: u32,
+}
+
+impl RetryPolicy {
+    /// No retries.
+    pub fn none() -> Self {
+        RetryPolicy {
+            max_retries: 0,
+            base_delay: Duration::ZERO,
+            factor: 1,
+        }
+    }
+
+    /// Retry up to `max_retries` times, starting at `base_delay` and multiplying
+    /// by `factor` each time.
+    pub fn exponential(max_retries: u32, base_delay: Duration, factor: u32) -> Self {
+        RetryPolicy {
+            max_retries,
+            base_delay,
+            factor,
+        }
+    }
+
+    /// The backoff delay before retry number `retry_index` (0-based).
+    fn backoff(&self, retry_index: u32) -> Duration {
+        let multiplier = self.factor.checked_pow(retry_index).unwrap_or(u32::MAX);
+        self.base_delay
+            .checked_mul(multiplier)
+            .unwrap_or(Duration::MAX)
+    }
+}
+
+/// A cancellable handle to a recurring or event-driven trigger (#26). Cancelling
+/// (or dropping) it stops the trigger from scheduling further tasks.
+pub struct TriggerHandle {
+    stop: Arc<AtomicBool>,
+    fired: Arc<AtomicU64>,
+    join: Mutex<Option<JoinHandle<()>>>,
+    unsubscribe: Mutex<Option<(EventBus, SubscriptionId)>>,
+}
+
+impl TriggerHandle {
+    /// Stop the trigger: it schedules no further tasks. Idempotent. Tasks already
+    /// scheduled run to completion.
+    pub fn cancel(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some((bus, id)) = self.unsubscribe.lock().expect("trigger lock").take() {
+            bus.unsubscribe(id);
+        }
+        if let Some(join) = self.join.lock().expect("trigger lock").take() {
+            let _ = join.join();
+        }
+    }
+
+    /// How many tasks this trigger has scheduled so far.
+    pub fn fired(&self) -> u64 {
+        self.fired.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for TriggerHandle {
+    fn drop(&mut self) {
+        self.cancel();
     }
 }
 
@@ -198,6 +273,20 @@ impl Scheduler {
         request: &GuestRequest,
         timeout: Option<Duration>,
     ) -> TaskId {
+        self.schedule_with_retry(name, ctx, request, timeout, RetryPolicy::none())
+    }
+
+    /// Like [`schedule`](Self::schedule) but a failed attempt is retried with
+    /// exponential backoff per `retry` (#26). The task only becomes `Failed` /
+    /// `TimedOut` after the retries are exhausted.
+    pub fn schedule_with_retry(
+        &self,
+        name: &str,
+        ctx: &FirmContext,
+        request: &GuestRequest,
+        timeout: Option<Duration>,
+        retry: RetryPolicy,
+    ) -> TaskId {
         let id = TaskId(self.shared.next_id.fetch_add(1, Ordering::Relaxed));
         self.shared.set_status(id, TaskStatus::Queued);
 
@@ -213,18 +302,108 @@ impl Scheduler {
             // Blocking here is the queue: a task waits until the guest is under
             // its per-guest concurrency limit.
             semaphore.acquire();
-            shared.set_status(id, TaskStatus::Running);
 
-            let status = match runtime.invoke_with_deadline(&name, &ctx, &request, deadline) {
-                Ok(response) => TaskStatus::Completed(response),
-                Err(MeshError::Timeout { .. }) => TaskStatus::TimedOut,
-                Err(e) => TaskStatus::Failed(e.to_string()),
+            let mut attempt = 0u32;
+            let final_status = loop {
+                shared.set_status(id, TaskStatus::Running);
+                match runtime.invoke_with_deadline(&name, &ctx, &request, deadline) {
+                    Ok(response) => break TaskStatus::Completed(response),
+                    Err(e) => {
+                        let status = match e {
+                            MeshError::Timeout { .. } => TaskStatus::TimedOut,
+                            other => TaskStatus::Failed(other.to_string()),
+                        };
+                        if attempt < retry.max_retries {
+                            thread::sleep(retry.backoff(attempt));
+                            attempt += 1;
+                            continue;
+                        }
+                        break status;
+                    }
+                }
             };
-            shared.set_status(id, status);
+            shared.set_status(id, final_status);
             semaphore.release();
         });
         self.workers.lock().expect("workers lock").push(worker);
         id
+    }
+
+    /// Fire `request` at guest `name` every `interval`, until the returned
+    /// [`TriggerHandle`] is cancelled or dropped (#26). Requires an `Arc<Scheduler>`.
+    // Trigger registration inherently carries the full task spec plus its source.
+    #[allow(clippy::too_many_arguments)]
+    pub fn schedule_interval(
+        self: &Arc<Self>,
+        interval: Duration,
+        name: &str,
+        ctx: &FirmContext,
+        request: &GuestRequest,
+        timeout: Option<Duration>,
+        retry: RetryPolicy,
+    ) -> TriggerHandle {
+        let stop = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicU64::new(0));
+        let scheduler = self.clone();
+        let (loop_stop, loop_fired) = (stop.clone(), fired.clone());
+        let (name, ctx, request) = (name.to_string(), ctx.clone(), request.clone());
+
+        let join = thread::spawn(move || {
+            while !loop_stop.load(Ordering::Relaxed) {
+                thread::sleep(interval);
+                if loop_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                scheduler.schedule_with_retry(&name, &ctx, &request, timeout, retry);
+                loop_fired.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        TriggerHandle {
+            stop,
+            fired,
+            join: Mutex::new(Some(join)),
+            unsubscribe: Mutex::new(None),
+        }
+    }
+
+    /// Fire a task at guest `name` whenever an event of `kind` is published on
+    /// `bus`, deriving each task's [`GuestRequest`] from the event via
+    /// `make_request` (#26). Cancel or drop the returned [`TriggerHandle`] to
+    /// stop. Requires an `Arc<Scheduler>`.
+    // Trigger registration inherently carries the full task spec plus its source.
+    #[allow(clippy::too_many_arguments)]
+    pub fn on_event(
+        self: &Arc<Self>,
+        bus: &EventBus,
+        kind: impl Into<String>,
+        make_request: impl Fn(&Event) -> GuestRequest + Send + Sync + 'static,
+        name: &str,
+        ctx: &FirmContext,
+        timeout: Option<Duration>,
+        retry: RetryPolicy,
+    ) -> TriggerHandle {
+        let stop = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicU64::new(0));
+        let scheduler = self.clone();
+        let (sub_stop, sub_fired) = (stop.clone(), fired.clone());
+        let (name, ctx) = (name.to_string(), ctx.clone());
+
+        let id = bus.subscribe(kind, move |event| {
+            if sub_stop.load(Ordering::Relaxed) {
+                return;
+            }
+            let request = make_request(event);
+            scheduler.schedule_with_retry(&name, &ctx, &request, timeout, retry);
+            sub_fired.fetch_add(1, Ordering::Relaxed);
+        });
+
+        TriggerHandle {
+            stop,
+            fired,
+            join: Mutex::new(None),
+            unsubscribe: Mutex::new(Some((bus.clone(), id))),
+        }
     }
 
     /// The current status of `id`, or `None` if no such task exists.
@@ -350,6 +529,20 @@ mod tests {
           (func (export "kbk_run") (param $ptr i32) (param $len i32) (result i64)
             (loop $l (br $l))
             (i64.const 0)))
+    "#;
+
+    /// A guest whose `kbk_run` always traps — every attempt fails.
+    const ALWAYS_FAILS_WAT: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (global $next (mut i32) (i32.const 1024))
+          (func (export "kbk_alloc") (param $len i32) (result i32)
+            (local $p i32)
+            global.get $next local.set $p
+            global.get $next local.get $len i32.add global.set $next
+            local.get $p)
+          (func (export "kbk_run") (param $ptr i32) (param $len i32) (result i64)
+            unreachable))
     "#;
 
     fn ctx() -> FirmContext {
@@ -488,5 +681,80 @@ mod tests {
         sem.release();
         h.join().unwrap();
         assert!(acquired.load(Ordering::SeqCst));
+    }
+
+    // ---- #26: recurring + event-triggered + retry + cancellation. ----
+
+    #[test]
+    fn a_recurring_trigger_fires_on_an_interval_until_cancelled() {
+        use std::sync::Arc;
+        let sched = Arc::new(Scheduler::new(runtime_with(&[("echo", ECHO_WAT)])));
+        let handle = sched.schedule_interval(
+            Duration::from_millis(20),
+            "echo",
+            &ctx(),
+            &GuestRequest::new(json!(null)),
+            None,
+            RetryPolicy::none(),
+        );
+        // After ~120ms at a 20ms interval, several tasks should have fired.
+        thread::sleep(Duration::from_millis(120));
+        let fired = handle.fired();
+        assert!(
+            fired >= 3,
+            "expected the trigger to fire repeatedly, got {fired}"
+        );
+
+        // Cancelling stops further firing.
+        handle.cancel();
+        let after_cancel = handle.fired();
+        thread::sleep(Duration::from_millis(80));
+        assert_eq!(handle.fired(), after_cancel, "cancel must stop the trigger");
+    }
+
+    #[test]
+    fn an_event_trigger_schedules_a_task_per_matching_event() {
+        use std::sync::Arc;
+        let sched = Arc::new(Scheduler::new(runtime_with(&[("echo", ECHO_WAT)])));
+        let bus = EventBus::new();
+        let handle = sched.on_event(
+            &bus,
+            "do.it",
+            |event| GuestRequest::new(event.payload.clone()),
+            "echo",
+            &ctx(),
+            None,
+            RetryPolicy::none(),
+        );
+
+        for _ in 0..3 {
+            bus.emit(Event::with_payload("do.it", json!({"n": 1})));
+        }
+        // Events of other kinds do not trigger.
+        bus.emit(Event::new("ignored"));
+        assert_eq!(handle.fired(), 3);
+
+        // After cancelling, new events schedule nothing.
+        handle.cancel();
+        bus.emit(Event::with_payload("do.it", json!({"n": 2})));
+        assert_eq!(handle.fired(), 3);
+    }
+
+    #[test]
+    fn a_failing_task_is_retried_with_exponential_backoff() {
+        let sched = Scheduler::new(runtime_with(&[("boom", ALWAYS_FAILS_WAT)]));
+        // 2 retries: backoffs of 25ms then 50ms before the final failure.
+        let retry = RetryPolicy::exponential(2, Duration::from_millis(25), 2);
+        let started = std::time::Instant::now();
+        let id =
+            sched.schedule_with_retry("boom", &ctx(), &GuestRequest::new(json!(null)), None, retry);
+
+        let status = sched.wait(id, Duration::from_secs(5)).unwrap();
+        assert!(matches!(status, TaskStatus::Failed(_)));
+        // The two backoffs (25 + 50 = 75ms) must have elapsed before giving up.
+        assert!(
+            started.elapsed() >= Duration::from_millis(70),
+            "expected exponential backoff to delay the final failure"
+        );
     }
 }
