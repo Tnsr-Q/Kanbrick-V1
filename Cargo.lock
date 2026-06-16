@@ -1020,6 +1020,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphify-analyze"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c39b262ba2b26a62c82b679fcd373e226720cd2338767d89fc8c9af4c227a27"
+dependencies = [
+ "graphify-core",
+ "petgraph",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "graphify-cluster"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97cdd6051248cd78cbf98f8174e9172e0fc32a13a4038737d078b38c25c2271f"
+dependencies = [
+ "graphify-core",
+ "petgraph",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "graphify-core"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d626632697dc92a095ea1a138f5bbfb9154ee33ae84792ab1d5019bc20fd9b9d"
+dependencies = [
+ "petgraph",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "graphify-export"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba6e8f00f6af0e67e5e3ae7929c5c2e35bc83348e115a3eedfb5ae135c683874"
+dependencies = [
+ "anyhow",
+ "graphify-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1447,9 +1500,18 @@ dependencies = [
 name = "kanbrick-discovery"
 version = "0.1.0"
 dependencies = [
+ "graphify-analyze",
+ "graphify-cluster",
+ "graphify-core",
+ "graphify-export",
+ "kanbrick-auth",
  "kanbrick-core",
- "thiserror 2.0.18",
+ "kanbrick-store",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1733,6 +1795,8 @@ checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset",
  "indexmap",
+ "serde",
+ "serde_derive",
 ]
 
 [[package]]
