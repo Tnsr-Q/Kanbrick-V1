@@ -9,6 +9,10 @@ repository.workspace = true
 
 [dependencies]
 kanbrick-core.workspace = true
+# The mesh routes a guest's query_graph through the clearance-enforcing
+# GuardedStore (auth, #24), which reads the firm graph (store).
+kanbrick-auth.workspace = true
+kanbrick-store.workspace = true
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 serde_json.workspace = true
@@ -18,3 +22,4 @@ tracing.workspace = true
 [dev-dependencies]
 tracing-subscriber.workspace = true
 uuid.workspace = true
+tempfile = "3"

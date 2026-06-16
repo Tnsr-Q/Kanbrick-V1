@@ -13,10 +13,13 @@
 //! in this slice fuel is provisioned generously and no epoch ticker runs.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
-use kanbrick_core::abi::{GuestRequest, GuestResponse};
+use kanbrick_auth::GuardedStore;
+use kanbrick_core::abi::{GraphQuery, GraphRows, GuestRequest, GuestResponse};
 use kanbrick_core::FirmContext;
+use kanbrick_store::Store as GraphStore;
 use wasmtime::{
     Caller, Config, Engine, Extern, Instance, Linker, Module, Store, StoreLimits,
     StoreLimitsBuilder,
@@ -29,6 +32,27 @@ use crate::error::{MeshError, Result};
 /// The import module name the host functions are published under; guests declare
 /// `#[link(wasm_import_module = "kanbrick")]` to use them.
 const HOST_MODULE: &str = "kanbrick";
+
+/// What the `kbk_query_graph` import needs to service a guest query: the firm
+/// graph plus the caller's host-authoritative context, routed through the
+/// clearance-enforcing [`GuardedStore`] (#24).
+struct QueryBackend {
+    store: Arc<GraphStore>,
+    ctx: FirmContext,
+}
+
+impl QueryBackend {
+    /// Run `query` under the caller's clearance, returning JSON-encoded
+    /// [`GraphRows`]. Errors surface as a guest trap.
+    fn run(&self, query: &GraphQuery) -> wasmtime::Result<Vec<u8>> {
+        let guarded = GuardedStore::new(&self.store, &self.ctx)
+            .map_err(|e| wasmtime::Error::msg(e.to_string()))?;
+        let rows: GraphRows = guarded
+            .query_graph(query)
+            .map_err(|e| wasmtime::Error::msg(e.to_string()))?;
+        serde_json::to_vec(&rows).map_err(|e| wasmtime::Error::msg(e.to_string()))
+    }
+}
 
 /// Per-guest sandbox limits. Defaults are the operator-approved values recorded
 /// in ADR-0002.
@@ -53,14 +77,16 @@ impl Default for RuntimeLimits {
     }
 }
 
-/// Store-local host state: the guest's WASI context, its memory limiter, and the
+/// Store-local host state: the guest's WASI context, its memory limiter, the
 /// host-authoritative [`FirmContext`] (JSON-encoded) the `kbk_ctx_*` imports
-/// expose to the guest (#23). `ctx_json` is empty for the raw [`MeshRuntime::dispatch`]
-/// path, which wires no context imports.
+/// expose to the guest (#23), and the optional graph-query backend the
+/// `kbk_query_graph` import uses (#24). `ctx_json` is empty and `query` is `None`
+/// for the raw [`MeshRuntime::dispatch`] path, which wires no host imports.
 struct HostState {
     wasi: WasiP1Ctx,
     limits: StoreLimits,
     ctx_json: Vec<u8>,
+    query: Option<QueryBackend>,
 }
 
 /// A compiled guest in the registry.
@@ -84,6 +110,7 @@ pub struct MeshRuntime {
     engine: Engine,
     limits: RuntimeLimits,
     registry: HashMap<String, RegisteredGuest>,
+    store: Option<Arc<GraphStore>>,
 }
 
 impl MeshRuntime {
@@ -103,7 +130,15 @@ impl MeshRuntime {
             engine,
             limits,
             registry: HashMap::new(),
+            store: None,
         })
+    }
+
+    /// Bind the firm graph so guests' `query_graph` calls can run (#24). Without
+    /// a bound store, a `kbk_query_graph` call traps. Returns `self` for chaining.
+    pub fn with_store(mut self, store: Arc<GraphStore>) -> Self {
+        self.store = Some(store);
+        self
     }
 
     /// The sandbox limits applied to every dispatch.
@@ -158,7 +193,7 @@ impl MeshRuntime {
     /// A fresh, sandboxed instance is created for the call and dropped afterward.
     pub fn dispatch(&self, name: &str, input: &[u8]) -> Result<Vec<u8>> {
         let module = self.module(name)?;
-        let mut store = self.new_store(Vec::new())?;
+        let mut store = self.new_store(Vec::new(), None)?;
         let mut linker: Linker<HostState> = Linker::new(&self.engine);
         self.add_wasi(&mut linker)?;
         let instance = self.instantiate_guest(&mut store, name, &module, &linker)?;
@@ -196,10 +231,15 @@ impl MeshRuntime {
         let ctx_json = serde_json::to_vec(ctx)
             .map_err(|e| MeshError::Engine(format!("serializing firm context: {e}")))?;
         let module = self.module(name)?;
-        let mut store = self.new_store(ctx_json)?;
+        let backend = self.store.clone().map(|store| QueryBackend {
+            store,
+            ctx: ctx.clone(),
+        });
+        let mut store = self.new_store(ctx_json, backend)?;
         let mut linker: Linker<HostState> = Linker::new(&self.engine);
         self.add_wasi(&mut linker)?;
         self.add_context_imports(&mut linker)?;
+        self.add_query_imports(&mut linker)?;
         let instance = self.instantiate_guest(&mut store, name, &module, &linker)?;
         self.call_run(&mut store, &instance, name, input)
     }
@@ -235,12 +275,63 @@ impl MeshRuntime {
                 "kbk_ctx_read",
                 |mut caller: Caller<'_, HostState>, ptr: u32| -> wasmtime::Result<()> {
                     let json = caller.data().ctx_json.clone();
-                    let memory = match caller.get_export("memory") {
-                        Some(Extern::Memory(m)) => m,
-                        _ => return Err(wasmtime::Error::msg("guest has no exported memory")),
-                    };
+                    let memory = guest_memory(&mut caller)?;
                     memory.write(&mut caller, ptr as usize, &json)?;
                     Ok(())
+                },
+            )
+            .map_err(|e| MeshError::Link(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Publish the graph-query import (#24): `kbk_query_graph(in_ptr, in_len)`,
+    /// which the host services by running the query through [`GuardedStore`] and
+    /// returning the packed `(out_ptr, out_len)` of the JSON [`GraphRows`] written
+    /// back into guest memory.
+    ///
+    /// This import is re-entrant: to return a variable-length result the host
+    /// calls back into the guest's own `kbk_alloc`. If no store is bound, the call
+    /// traps (a guest cannot query a runtime with no graph).
+    fn add_query_imports(&self, linker: &mut Linker<HostState>) -> Result<()> {
+        linker
+            .func_wrap(
+                HOST_MODULE,
+                "kbk_query_graph",
+                |mut caller: Caller<'_, HostState>,
+                 in_ptr: u32,
+                 in_len: u32|
+                 -> wasmtime::Result<u64> {
+                    let memory = guest_memory(&mut caller)?;
+
+                    // Read the request JSON the guest wrote into its memory.
+                    let mut buf = vec![0u8; in_len as usize];
+                    memory.read(&caller, in_ptr as usize, &mut buf)?;
+                    let query: GraphQuery = serde_json::from_slice(&buf)
+                        .map_err(|e| wasmtime::Error::msg(format!("invalid GraphQuery: {e}")))?;
+
+                    // Run it through the clearance-enforcing backend.
+                    let backend =
+                        caller.data().query.as_ref().ok_or_else(|| {
+                            wasmtime::Error::msg("no graph bound to this runtime")
+                        })?;
+                    // SAFETY of borrows: `run` does not touch `caller`, so take the
+                    // result bytes before reborrowing `caller` mutably below.
+                    let out = backend.run(&query)?;
+
+                    // Hand the result back: allocate space in *guest* memory via
+                    // the guest's own allocator, then write the rows there.
+                    let alloc = caller
+                        .get_export("kbk_alloc")
+                        .and_then(Extern::into_func)
+                        .ok_or_else(|| wasmtime::Error::msg("guest has no kbk_alloc export"))?
+                        .typed::<u32, u32>(&caller)?;
+                    let out_len = u32::try_from(out.len())
+                        .map_err(|_| wasmtime::Error::msg("query result exceeds 4 GiB"))?;
+                    let out_ptr = alloc.call(&mut caller, out_len)?;
+                    let memory = guest_memory(&mut caller)?;
+                    memory.write(&mut caller, out_ptr as usize, &out)?;
+
+                    Ok(((out_ptr as u64) << 32) | (out_len as u64))
                 },
             )
             .map_err(|e| MeshError::Link(e.to_string()))?;
@@ -350,8 +441,12 @@ impl MeshRuntime {
     }
 
     /// Build a fresh, sandboxed [`Store`] for a single dispatch, carrying the
-    /// (possibly empty) host-authoritative context JSON.
-    fn new_store(&self, ctx_json: Vec<u8>) -> Result<Store<HostState>> {
+    /// (possibly empty) host-authoritative context JSON and optional query backend.
+    fn new_store(
+        &self,
+        ctx_json: Vec<u8>,
+        query: Option<QueryBackend>,
+    ) -> Result<Store<HostState>> {
         // Locked-down WASI: no preopened dirs, no network, no inherited stdio.
         let wasi = WasiCtxBuilder::new().build_p1();
         let limits = StoreLimitsBuilder::new()
@@ -363,6 +458,7 @@ impl MeshRuntime {
                 wasi,
                 limits,
                 ctx_json,
+                query,
             },
         );
         store.limiter(|s| &mut s.limits);
@@ -373,6 +469,14 @@ impl MeshRuntime {
         // the scheduler (#25) provisions a real timeout.
         store.set_epoch_deadline(u64::MAX);
         Ok(store)
+    }
+}
+
+/// Fetch the guest's exported `memory` from within a host import.
+fn guest_memory(caller: &mut Caller<'_, HostState>) -> wasmtime::Result<wasmtime::Memory> {
+    match caller.get_export("memory") {
+        Some(Extern::Memory(m)) => Ok(m),
+        _ => Err(wasmtime::Error::msg("guest has no exported memory")),
     }
 }
 

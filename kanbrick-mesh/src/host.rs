@@ -6,29 +6,45 @@
 //!
 //! * `get_firm_context` / `log` are fully live here.
 //! * `emit_event` buffers events until the real pub/sub bus lands (#27).
-//! * `query_graph` is wired to the clearance-enforcing `GuardedStore` in #24;
-//!   until then it returns a clear "not yet wired" error.
+//! * `query_graph` routes through the clearance-enforcing
+//!   [`GuardedStore`](kanbrick_auth::GuardedStore) (#24) when a store is bound;
+//!   without one it returns a clear error.
 //!
 //! The WASM-facing side of context propagation (the `kbk_ctx_*` imports) lives in
 //! [`crate::runtime`]; both read the same host-supplied identity, which a guest
 //! can never set or forge.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use kanbrick_auth::GuardedStore;
 use kanbrick_core::abi::{Event, GraphQuery, GraphRows, HostFunctions, LogLevel};
 use kanbrick_core::{Error, FirmContext, Result};
+use kanbrick_store::Store;
 
 /// Per-invocation host state servicing a guest's [`HostFunctions`] calls.
 pub struct MeshHost {
     ctx: FirmContext,
+    store: Option<Arc<Store>>,
     events: Mutex<Vec<Event>>,
 }
 
 impl MeshHost {
-    /// Bind the host to the caller's `ctx` for one invocation.
+    /// Bind the host to the caller's `ctx`, with no graph access. `query_graph`
+    /// will error until a store is bound via [`with_store`](Self::with_store).
     pub fn new(ctx: FirmContext) -> Self {
         MeshHost {
             ctx,
+            store: None,
+            events: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Bind the host to `ctx` *and* the firm graph, so `query_graph` runs through
+    /// the clearance-enforcing [`GuardedStore`].
+    pub fn with_store(ctx: FirmContext, store: Arc<Store>) -> Self {
+        MeshHost {
+            ctx,
+            store: Some(store),
             events: Mutex::new(Vec::new()),
         }
     }
@@ -44,10 +60,14 @@ impl HostFunctions for MeshHost {
         self.ctx.clone()
     }
 
-    fn query_graph(&self, _query: GraphQuery) -> Result<GraphRows> {
-        Err(Error::Internal(
-            "query_graph is wired to GuardedStore in #24".to_string(),
-        ))
+    fn query_graph(&self, query: GraphQuery) -> Result<GraphRows> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            Error::Internal("query_graph: no store is bound to this host".to_string())
+        })?;
+        // Every guest query runs under the caller's host-authoritative context
+        // through the audited, clearance-filtering interceptor (#18/#24).
+        let guarded = GuardedStore::new(store, &self.ctx)?;
+        guarded.query_graph(&query)
     }
 
     fn emit_event(&self, event: Event) -> Result<()> {
@@ -98,13 +118,52 @@ mod tests {
     }
 
     #[test]
-    fn query_graph_reports_it_is_not_yet_wired() {
+    fn query_graph_without_a_store_errors() {
         let h = host(ClearanceLevel::L5);
         let err = h
             .query_graph(GraphQuery::new("MATCH (n) RETURN n"))
             .unwrap_err();
         assert_eq!(err.kind(), kanbrick_core::ErrorKind::Internal);
-        assert!(err.to_string().contains("#24"));
+        assert!(err.to_string().contains("no store"));
+    }
+
+    fn seeded_store() -> (tempfile::TempDir, std::sync::Arc<kanbrick_store::Store>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = kanbrick_store::Store::open(dir.path()).unwrap();
+        let seed = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../seed/kanbrick_seed_data.cypher"
+        ))
+        .unwrap();
+        kanbrick_store::Migrator::firm(seed).run(&store).unwrap();
+        (dir, std::sync::Arc::new(store))
+    }
+
+    const ALL_COMPANIES: &str = "MATCH (c:Company) RETURN c.company_id, c.name";
+
+    #[test]
+    fn query_graph_routes_through_guardedstore_and_filters_by_clearance() {
+        let (_d, store) = seeded_store();
+
+        // An L3 lead's guest query comes back scoped to their 5 segment companies.
+        let lead = FirmContext::new(
+            Uuid::new_v4(),
+            "tyler.begemann@kanbrick.com",
+            ClearanceLevel::L3,
+        );
+        let host3 = MeshHost::with_store(lead, store.clone());
+        let rows = host3.query_graph(GraphQuery::new(ALL_COMPANIES)).unwrap();
+        assert_eq!(rows.len(), 5);
+
+        // The CEO (L5) sees all 9 through the same host call.
+        let ceo = FirmContext::new(
+            Uuid::new_v4(),
+            "tracy.brittcool@kanbrick.com",
+            ClearanceLevel::L5,
+        );
+        let host5 = MeshHost::with_store(ceo, store);
+        let rows = host5.query_graph(GraphQuery::new(ALL_COMPANIES)).unwrap();
+        assert_eq!(rows.len(), 9);
     }
 
     #[test]

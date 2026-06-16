@@ -29,9 +29,10 @@
 
 use std::collections::HashSet;
 
-use kanbrick_core::{ClearanceLevel, FirmContext, Result};
+use kanbrick_core::{ClearanceLevel, Error, FirmContext, Result};
 use kanbrick_store::{CompanyNode, Params, PersonNode, Store};
 use serde::Deserialize;
+use serde_json::Value as JsonValue;
 
 /// A caller's resolved data-visibility scope.
 #[derive(Debug, Clone)]
@@ -149,6 +150,70 @@ impl ClearanceScope {
     pub fn self_email(&self) -> &str {
         &self.self_email
     }
+
+    /// Fail-closed clearance filter for generic JSON result rows (issue #24).
+    ///
+    /// Each row is classified by the security-relevant key it exposes: an
+    /// `email` marks a person row, a `company_id` marks a company row. Rows the
+    /// caller may see are kept; rows they may not are dropped — reusing the exact
+    /// person/company visibility of [`retain_persons`](Self::retain_persons) and
+    /// [`retain_companies`](Self::retain_companies).
+    ///
+    /// A row that exposes **neither** key cannot be proven safe to return, so for
+    /// a non-see-all caller the whole query is **denied** (it effectively requires
+    /// L4+). This is the conservative default: a guest cannot dodge filtering by
+    /// projecting raw columns. L4/L5 callers see every row unfiltered.
+    pub fn retain_rows(&self, rows: Vec<JsonValue>) -> Result<Vec<JsonValue>> {
+        if self.sees_all {
+            return Ok(rows);
+        }
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            match row_clearance_key(&row) {
+                Some(RowKey::Person(email)) => {
+                    if self.can_see_person(email) {
+                        out.push(row);
+                    }
+                }
+                Some(RowKey::Company(id)) => {
+                    if self.can_see_company(id) {
+                        out.push(row);
+                    }
+                }
+                None => {
+                    // Unfilterable projection: deny rather than risk leaking.
+                    return Err(Error::AccessDenied {
+                        required: ClearanceLevel::L4,
+                        actual: self.clearance,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// The security-relevant identity of a result row, used by
+/// [`ClearanceScope::retain_rows`].
+enum RowKey<'a> {
+    /// A person row, keyed by its `email`.
+    Person(&'a str),
+    /// A company row, keyed by its `company_id`.
+    Company(&'a str),
+}
+
+/// Classify a result row by the clearance key it exposes. A row must be a JSON
+/// object with a string `email` (person) or `company_id` (company); anything
+/// else is unclassifiable (and therefore denied for non-privileged callers).
+fn row_clearance_key(row: &JsonValue) -> Option<RowKey<'_>> {
+    let obj = row.as_object()?;
+    if let Some(email) = obj.get("email").and_then(JsonValue::as_str) {
+        return Some(RowKey::Person(email));
+    }
+    if let Some(company_id) = obj.get("company_id").and_then(JsonValue::as_str) {
+        return Some(RowKey::Company(company_id));
+    }
+    None
 }
 
 #[cfg(test)]
