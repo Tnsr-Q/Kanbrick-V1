@@ -193,7 +193,7 @@ impl MeshRuntime {
     /// A fresh, sandboxed instance is created for the call and dropped afterward.
     pub fn dispatch(&self, name: &str, input: &[u8]) -> Result<Vec<u8>> {
         let module = self.module(name)?;
-        let mut store = self.new_store(Vec::new(), None)?;
+        let mut store = self.new_store(Vec::new(), None, u64::MAX)?;
         let mut linker: Linker<HostState> = Linker::new(&self.engine);
         self.add_wasi(&mut linker)?;
         let instance = self.instantiate_guest(&mut store, name, &module, &linker)?;
@@ -212,11 +212,25 @@ impl MeshRuntime {
         ctx: &FirmContext,
         request: &GuestRequest,
     ) -> Result<GuestResponse> {
+        self.invoke_with_deadline(name, ctx, request, u64::MAX)
+    }
+
+    /// Like [`invoke`](Self::invoke) but the guest is killed after `epoch_deadline`
+    /// engine ticks (`u64::MAX` = unbounded). Crate-internal: the
+    /// [`Scheduler`](crate::Scheduler) converts a task timeout into ticks and
+    /// drives the engine epoch so the deadline actually fires (#25).
+    pub(crate) fn invoke_with_deadline(
+        &self,
+        name: &str,
+        ctx: &FirmContext,
+        request: &GuestRequest,
+        epoch_deadline: u64,
+    ) -> Result<GuestResponse> {
         let input = request.to_json_bytes().map_err(|e| MeshError::BadOutput {
             name: name.to_string(),
             detail: format!("encoding request: {e}"),
         })?;
-        let output = self.run_with_context(name, ctx, &input)?;
+        let output = self.run_with_context_deadline(name, ctx, &input, epoch_deadline)?;
         GuestResponse::from_json_bytes(&output).map_err(|e| MeshError::BadOutput {
             name: name.to_string(),
             detail: format!("decoding response: {e}"),
@@ -228,6 +242,18 @@ impl MeshRuntime {
     /// imports. Returns the raw output bytes. ([`invoke`](Self::invoke) is the
     /// typed wrapper.)
     pub fn run_with_context(&self, name: &str, ctx: &FirmContext, input: &[u8]) -> Result<Vec<u8>> {
+        self.run_with_context_deadline(name, ctx, input, u64::MAX)
+    }
+
+    /// [`run_with_context`](Self::run_with_context) with an explicit epoch
+    /// deadline (`u64::MAX` = unbounded).
+    fn run_with_context_deadline(
+        &self,
+        name: &str,
+        ctx: &FirmContext,
+        input: &[u8],
+        epoch_deadline: u64,
+    ) -> Result<Vec<u8>> {
         let ctx_json = serde_json::to_vec(ctx)
             .map_err(|e| MeshError::Engine(format!("serializing firm context: {e}")))?;
         let module = self.module(name)?;
@@ -235,7 +261,7 @@ impl MeshRuntime {
             store,
             ctx: ctx.clone(),
         });
-        let mut store = self.new_store(ctx_json, backend)?;
+        let mut store = self.new_store(ctx_json, backend, epoch_deadline)?;
         let mut linker: Linker<HostState> = Linker::new(&self.engine);
         self.add_wasi(&mut linker)?;
         self.add_context_imports(&mut linker)?;
@@ -402,10 +428,7 @@ impl MeshRuntime {
 
         let in_ptr = alloc
             .call(&mut *store, in_len)
-            .map_err(|e| MeshError::Trap {
-                name: name.to_string(),
-                detail: format!("kbk_alloc: {e}"),
-            })?;
+            .map_err(|e| MeshError::from_call(name, "kbk_alloc", &e))?;
         memory
             .write(&mut *store, in_ptr as usize, input)
             .map_err(|e| MeshError::BadOutput {
@@ -415,10 +438,7 @@ impl MeshRuntime {
 
         let packed = run
             .call(&mut *store, (in_ptr, in_len))
-            .map_err(|e| MeshError::Trap {
-                name: name.to_string(),
-                detail: format!("kbk_run: {e}"),
-            })?;
+            .map_err(|e| MeshError::from_call(name, "kbk_run", &e))?;
 
         let out_ptr = (packed >> 32) as usize;
         let out_len = (packed & 0xffff_ffff) as usize;
@@ -441,11 +461,15 @@ impl MeshRuntime {
     }
 
     /// Build a fresh, sandboxed [`Store`] for a single dispatch, carrying the
-    /// (possibly empty) host-authoritative context JSON and optional query backend.
+    /// (possibly empty) host-authoritative context JSON and optional query
+    /// backend, and armed with `epoch_deadline` engine ticks before it is killed
+    /// (`u64::MAX` = no wall-clock limit). The [`Scheduler`](crate::Scheduler)
+    /// drives the engine epoch that makes a finite deadline fire (#25).
     fn new_store(
         &self,
         ctx_json: Vec<u8>,
         query: Option<QueryBackend>,
+        epoch_deadline: u64,
     ) -> Result<Store<HostState>> {
         // Locked-down WASI: no preopened dirs, no network, no inherited stdio.
         let wasi = WasiCtxBuilder::new().build_p1();
@@ -465,10 +489,18 @@ impl MeshRuntime {
         store
             .set_fuel(self.limits.fuel)
             .map_err(|e| MeshError::Engine(e.to_string()))?;
-        // No epoch ticker runs in this slice, so set a deadline that never fires;
-        // the scheduler (#25) provisions a real timeout.
-        store.set_epoch_deadline(u64::MAX);
+        // `set_epoch_deadline` adds `ticks_beyond_current` to the engine's current
+        // epoch; once the scheduler's ticker has advanced that epoch, an unbounded
+        // `u64::MAX` deadline would overflow (and panic in debug). Clamp so the
+        // "no timeout" sentinel stays effectively infinite without overflowing.
+        store.set_epoch_deadline(epoch_deadline.min(u64::MAX / 2));
         Ok(store)
+    }
+
+    /// The wasmtime engine. Crate-internal so the [`Scheduler`](crate::Scheduler)
+    /// can drive epoch interruption for timeouts.
+    pub(crate) fn engine(&self) -> &Engine {
+        &self.engine
     }
 }
 

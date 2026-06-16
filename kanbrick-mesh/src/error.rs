@@ -46,13 +46,32 @@ pub enum MeshError {
         detail: String,
     },
 
-    /// The guest trapped during execution (panic, fuel exhaustion, epoch
-    /// timeout, or out-of-bounds access).
+    /// The guest trapped during execution (panic, out-of-bounds access, …). Use
+    /// [`MeshError::Timeout`] / [`MeshError::ResourceLimited`] for the specific
+    /// epoch and fuel kills.
     #[error("guest {name:?} trapped: {detail}")]
     Trap {
         /// The guest's registered name.
         name: String,
         /// The trap detail.
+        detail: String,
+    },
+
+    /// The guest exceeded its wall-clock budget and was killed (epoch
+    /// interruption, #25).
+    #[error("guest {name:?} timed out and was killed")]
+    Timeout {
+        /// The guest's registered name.
+        name: String,
+    },
+
+    /// The guest hit a resource ceiling and was killed — fuel exhaustion
+    /// (runaway compute) or a memory-growth denial (#28).
+    #[error("guest {name:?} exceeded its resource limits: {detail}")]
+    ResourceLimited {
+        /// The guest's registered name.
+        name: String,
+        /// Which limit was hit.
         detail: String,
     },
 
@@ -68,6 +87,28 @@ pub enum MeshError {
     /// Dispatch was requested for a guest that is not in the registry.
     #[error("no guest registered under the name {0:?}")]
     GuestNotFound(String),
+}
+
+impl MeshError {
+    /// Classify the error from a guest function call into the most specific
+    /// [`MeshError`]: an epoch interruption becomes [`Timeout`](Self::Timeout),
+    /// fuel exhaustion becomes [`ResourceLimited`](Self::ResourceLimited), and
+    /// anything else a generic [`Trap`](Self::Trap).
+    pub(crate) fn from_call(name: &str, stage: &str, err: &wasmtime::Error) -> Self {
+        match err.downcast_ref::<wasmtime::Trap>() {
+            Some(wasmtime::Trap::Interrupt) => MeshError::Timeout {
+                name: name.to_string(),
+            },
+            Some(wasmtime::Trap::OutOfFuel) => MeshError::ResourceLimited {
+                name: name.to_string(),
+                detail: "fuel exhausted (runaway compute)".to_string(),
+            },
+            _ => MeshError::Trap {
+                name: name.to_string(),
+                detail: format!("{stage}: {err}"),
+            },
+        }
+    }
 }
 
 impl From<MeshError> for kanbrick_core::Error {

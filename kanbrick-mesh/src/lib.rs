@@ -14,6 +14,8 @@
 //!   and [`invoke`](MeshRuntime::invoke) guests with a host-authoritative context.
 //! * [`MeshHost`] — the host's [`HostFunctions`](kanbrick_core::abi::HostFunctions)
 //!   implementation servicing guest capability calls.
+//! * [`Scheduler`] — immediate task dispatch with a wall-clock timeout and a
+//!   per-guest concurrency limit (#25).
 //! * [`RuntimeLimits`] — per-guest sandbox limits (memory, fuel, timeout).
 //! * [`GuestInfo`] — a registered guest's name + version.
 //! * [`MeshError`] — the runtime error surface.
@@ -28,7 +30,9 @@
 pub mod error;
 pub mod host;
 pub mod runtime;
+pub mod scheduler;
 
 pub use error::{MeshError, Result};
 pub use host::MeshHost;
 pub use runtime::{GuestInfo, MeshRuntime, RuntimeLimits};
+pub use scheduler::{Scheduler, SchedulerConfig, TaskId, TaskStatus};
