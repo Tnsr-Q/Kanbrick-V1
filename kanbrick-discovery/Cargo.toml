@@ -1,6 +1,6 @@
 [package]
 name = "kanbrick-discovery"
-description = "graphify-rs graph analysis over the firm graph."
+description = "Graph analysis over the firm graph (Layer 4 — Map)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,5 +9,19 @@ repository.workspace = true
 
 [dependencies]
 kanbrick-core.workspace = true
-thiserror.workspace = true
+kanbrick-store.workspace = true
+kanbrick-auth.workspace = true
 tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Discovery engine (Phase 4) — see ADR-0003. graphify-rs 0.8 is a CLI binary;
+# its reusable library lives in these sub-crates.
+graphify-core.workspace = true
+graphify-analyze.workspace = true
+graphify-cluster.workspace = true
+graphify-export.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+uuid.workspace = true

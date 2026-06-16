@@ -92,8 +92,21 @@ argon2 = "0.5"
 wasmtime = "45"
 wasmtime-wasi = "45"
 
-# Discovery (integrated in Phase 4; published on crates.io, edition 2024 / rustc >= 1.85)
-graphify-rs = "0.8"
+# Discovery (integrated in Phase 4; published on crates.io, edition 2024 / rustc >= 1.85).
+#
+# graphify-rs 0.8 is a *binary* crate (a CLI), not a library — see ADR-0003. The
+# reusable functionality ships as its sub-crates, which we depend on directly:
+#   * graphify-core    — KnowledgeGraph (petgraph-backed) + GraphNode/GraphEdge model
+#   * graphify-analyze — pagerank / god_nodes (degree centrality) / detect_cycles
+#   * graphify-cluster — community detection
+#   * graphify-export  — export_cypher / export_json (used by the code-graph ingest)
+#   * graphify-build / graphify-extract — code AST → KnowledgeGraph (code-graph ingest)
+graphify-core = "0.8"
+graphify-analyze = "0.8"
+graphify-cluster = "0.8"
+graphify-export = "0.8"
+graphify-build = "0.8"
+graphify-extract = "0.8"
 
 [profile.release]
 lto = "thin"
