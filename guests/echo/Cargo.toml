@@ -1,0 +1,23 @@
+# Echo guest — the minimal Phase 3 WASM guest (issue #21).
+#
+# Built ONLY for `wasm32-wasip1` by kanbrick-mesh's build script; it is excluded
+# from the workspace build graph (see the root Cargo.toml `exclude`). It has no
+# dependencies and deliberately implements the raw host↔guest calling convention
+# from ADR-0002 by hand — the typed guest SDK (#39) comes in Phase 5.
+[package]
+name = "kanbrick-guest-echo"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+# A cdylib on wasm32-wasip1 is a "reactor" module: it exports our functions plus
+# `_initialize`, with no `_start`/`main`.
+crate-type = ["cdylib"]
+
+[profile.release]
+# Small, predictable artifact for a fixture guest.
+opt-level = "s"
+lto = true
+strip = true

@@ -23,11 +23,15 @@ members = [
     "guests/compliance",     # WASM guest scaffold — compliance checks
 ]
 # Vendored upstreams are independent workspaces; keep them out of our graph.
+# `guests/echo` is a wasm32-wasip1-only fixture (ADR-0002): it is compiled to
+# WASM by kanbrick-mesh's build script, never for the host target, so it is
+# excluded from the workspace build graph.
 exclude = [
     "crates/sparrowdb",
     "crates/sparrowdb-ontology",
     "crates/ironclaw",
     "crates/tachyon-mesh",
+    "guests/echo",
 ]
 
 [workspace.package]
@@ -83,8 +87,10 @@ clap = { version = "4.5", features = ["derive"] }
 jsonwebtoken = "9"
 argon2 = "0.5"
 
-# WASM runtime (integrated in Phase 3 via the vendored tachyon-mesh submodule)
+# WASM runtime. Phase 3 (ADR-0002) builds kanbrick-mesh directly on wasmtime 45
+# with WASIp1 guests, instead of depending on Tachyon-Mesh's core-host.
 wasmtime = "45"
+wasmtime-wasi = "45"
 
 # Discovery (integrated in Phase 4; published on crates.io, edition 2024 / rustc >= 1.85)
 graphify-rs = "0.8"

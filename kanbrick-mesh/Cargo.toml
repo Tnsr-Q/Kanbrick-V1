@@ -1,6 +1,6 @@
 [package]
 name = "kanbrick-mesh"
-description = "Tachyon-Mesh runtime integration and WASM guest dispatch."
+description = "WASM orchestration runtime (wasmtime 45) and guest dispatch."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,5 +9,18 @@ repository.workspace = true
 
 [dependencies]
 kanbrick-core.workspace = true
+# The mesh routes a guest's query_graph through the clearance-enforcing
+# GuardedStore (auth, #24), which reads the firm graph (store).
+kanbrick-auth.workspace = true
+kanbrick-store.workspace = true
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+uuid.workspace = true
+tempfile = "3"
