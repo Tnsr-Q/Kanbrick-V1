@@ -16,6 +16,8 @@
 //!   implementation servicing guest capability calls.
 //! * [`Scheduler`] — immediate task dispatch with a wall-clock timeout and a
 //!   per-guest concurrency limit (#25).
+//! * [`EventBus`] — publish/subscribe with typed subscriptions and a replayable
+//!   log (#27).
 //! * [`RuntimeLimits`] — per-guest sandbox limits (memory, fuel, timeout).
 //! * [`GuestInfo`] — a registered guest's name + version.
 //! * [`MeshError`] — the runtime error surface.
@@ -28,11 +30,13 @@
 //! [`docs/adr/0002-phase-3-wasm-runtime.md`]: https://github.com/Tnsr-Q/Kanbrick-V1/blob/main/docs/adr/0002-phase-3-wasm-runtime.md
 
 pub mod error;
+pub mod event;
 pub mod host;
 pub mod runtime;
 pub mod scheduler;
 
 pub use error::{MeshError, Result};
+pub use event::{EventBus, SubscriptionId};
 pub use host::MeshHost;
 pub use runtime::{GuestInfo, MeshRuntime, RuntimeLimits};
 pub use scheduler::{Scheduler, SchedulerConfig, TaskId, TaskStatus};

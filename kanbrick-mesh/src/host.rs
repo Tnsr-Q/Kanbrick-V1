@@ -21,35 +21,44 @@ use kanbrick_core::abi::{Event, GraphQuery, GraphRows, HostFunctions, LogLevel};
 use kanbrick_core::{Error, FirmContext, Result};
 use kanbrick_store::Store;
 
+use crate::event::EventBus;
+
 /// Per-invocation host state servicing a guest's [`HostFunctions`] calls.
 pub struct MeshHost {
     ctx: FirmContext,
     store: Option<Arc<Store>>,
+    bus: Option<EventBus>,
     events: Mutex<Vec<Event>>,
 }
 
 impl MeshHost {
-    /// Bind the host to the caller's `ctx`, with no graph access. `query_graph`
-    /// will error until a store is bound via [`with_store`](Self::with_store).
+    /// Bind the host to the caller's `ctx`. With no store, `query_graph` errors;
+    /// with no bus, `emit_event` buffers into [`drain_events`](Self::drain_events).
+    /// Attach a graph and a bus with [`with_store`](Self::with_store) /
+    /// [`with_bus`](Self::with_bus).
     pub fn new(ctx: FirmContext) -> Self {
         MeshHost {
             ctx,
             store: None,
+            bus: None,
             events: Mutex::new(Vec::new()),
         }
     }
 
-    /// Bind the host to `ctx` *and* the firm graph, so `query_graph` runs through
-    /// the clearance-enforcing [`GuardedStore`].
-    pub fn with_store(ctx: FirmContext, store: Arc<Store>) -> Self {
-        MeshHost {
-            ctx,
-            store: Some(store),
-            events: Mutex::new(Vec::new()),
-        }
+    /// Bind the firm graph, so `query_graph` runs through the clearance-enforcing
+    /// [`GuardedStore`] (#24). Builder-style.
+    pub fn with_store(mut self, store: Arc<Store>) -> Self {
+        self.store = Some(store);
+        self
     }
 
-    /// Take the events emitted so far (buffered until the #27 event bus lands).
+    /// Bind an [`EventBus`], so `emit_event` publishes onto it (#27). Builder-style.
+    pub fn with_bus(mut self, bus: EventBus) -> Self {
+        self.bus = Some(bus);
+        self
+    }
+
+    /// Take the events buffered by `emit_event` when no bus is attached.
     pub fn drain_events(&self) -> Vec<Event> {
         std::mem::take(&mut self.events.lock().expect("event buffer lock"))
     }
@@ -71,7 +80,12 @@ impl HostFunctions for MeshHost {
     }
 
     fn emit_event(&self, event: Event) -> Result<()> {
-        self.events.lock().expect("event buffer lock").push(event);
+        match &self.bus {
+            Some(bus) => {
+                bus.emit(event);
+            }
+            None => self.events.lock().expect("event buffer lock").push(event),
+        }
         Ok(())
     }
 
@@ -118,6 +132,24 @@ mod tests {
     }
 
     #[test]
+    fn emit_event_publishes_to_an_attached_bus() {
+        use crate::event::EventBus;
+        let bus = EventBus::new();
+        let h = MeshHost::new(FirmContext::new(
+            Uuid::nil(),
+            "u@kanbrick.com",
+            ClearanceLevel::L3,
+        ))
+        .with_bus(bus.clone());
+
+        h.emit_event(Event::new("valuation.completed")).unwrap();
+        // It went to the bus (the log), not the local buffer.
+        assert!(h.drain_events().is_empty());
+        assert_eq!(bus.history().len(), 1);
+        assert_eq!(bus.history()[0].kind, "valuation.completed");
+    }
+
+    #[test]
     fn query_graph_without_a_store_errors() {
         let h = host(ClearanceLevel::L5);
         let err = h
@@ -151,7 +183,7 @@ mod tests {
             "tyler.begemann@kanbrick.com",
             ClearanceLevel::L3,
         );
-        let host3 = MeshHost::with_store(lead, store.clone());
+        let host3 = MeshHost::new(lead).with_store(store.clone());
         let rows = host3.query_graph(GraphQuery::new(ALL_COMPANIES)).unwrap();
         assert_eq!(rows.len(), 5);
 
@@ -161,7 +193,7 @@ mod tests {
             "tracy.brittcool@kanbrick.com",
             ClearanceLevel::L5,
         );
-        let host5 = MeshHost::with_store(ceo, store);
+        let host5 = MeshHost::new(ceo).with_store(store);
         let rows = host5.query_graph(GraphQuery::new(ALL_COMPANIES)).unwrap();
         assert_eq!(rows.len(), 9);
     }
