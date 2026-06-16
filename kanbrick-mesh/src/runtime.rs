@@ -13,7 +13,7 @@
 //! in this slice fuel is provisioned generously and no epoch ticker runs.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use kanbrick_auth::GuardedStore;
@@ -106,10 +106,16 @@ pub struct GuestInfo {
 }
 
 /// The WASM runtime: a wasmtime engine plus a registry of loadable guests.
+///
+/// The registry is behind an [`RwLock`] so a guest can be hot-reloaded (#29)
+/// while the runtime is concurrently serving calls: dispatch takes a read lock
+/// and clones the (cheap, `Arc`-backed) [`Module`] before releasing it, so an
+/// in-flight call always finishes on the code it started with even as a reload
+/// swaps in a replacement for subsequent calls.
 pub struct MeshRuntime {
     engine: Engine,
     limits: RuntimeLimits,
-    registry: HashMap<String, RegisteredGuest>,
+    registry: RwLock<HashMap<String, RegisteredGuest>>,
     store: Option<Arc<GraphStore>>,
 }
 
@@ -129,7 +135,7 @@ impl MeshRuntime {
         Ok(MeshRuntime {
             engine,
             limits,
-            registry: HashMap::new(),
+            registry: RwLock::new(HashMap::new()),
             store: None,
         })
     }
@@ -146,15 +152,36 @@ impl MeshRuntime {
         &self.limits
     }
 
-    /// Compile `wasm` and register it under `name` with `version`.
-    ///
-    /// Re-registering an existing name replaces it (the basis for hot-reload, #29).
+    /// Compile `wasm` and register it under `name` with `version`. Used to load
+    /// guests at setup; see [`reload_module`](Self::reload_module) for swapping a
+    /// guest while the runtime is serving.
     pub fn register_module(&mut self, name: &str, version: &str, wasm: &[u8]) -> Result<()> {
+        self.install(name, version, wasm)
+    }
+
+    /// Hot-reload the guest registered as `name`, **replacing** it with `wasm`
+    /// compiled at `version` (#29). Callable while the runtime is concurrently
+    /// serving (it takes `&self`).
+    ///
+    /// The swap is atomic and fail-safe: the new module is compiled *first*, and
+    /// the registry is only updated if compilation succeeds. A corrupt or invalid
+    /// replacement is rejected with an error and the previously-registered guest
+    /// keeps serving. In-flight calls on the old module are unaffected (they hold
+    /// their own `Arc`-clone); subsequent calls route to the replacement, with
+    /// nothing dropped.
+    pub fn reload_module(&self, name: &str, version: &str, wasm: &[u8]) -> Result<()> {
+        self.install(name, version, wasm)
+    }
+
+    /// Compile-then-swap a guest into the registry. Compilation happens *before*
+    /// the write lock, so a bad module never disturbs the registry or blocks
+    /// concurrent dispatch.
+    fn install(&self, name: &str, version: &str, wasm: &[u8]) -> Result<()> {
         let module = Module::new(&self.engine, wasm).map_err(|e| MeshError::Compile {
             name: name.to_string(),
             detail: e.to_string(),
         })?;
-        self.registry.insert(
+        self.registry.write().expect("registry lock").insert(
             name.to_string(),
             RegisteredGuest {
                 name: name.to_string(),
@@ -170,6 +197,8 @@ impl MeshRuntime {
     pub fn guests(&self) -> Vec<GuestInfo> {
         let mut out: Vec<GuestInfo> = self
             .registry
+            .read()
+            .expect("registry lock")
             .values()
             .map(|g| GuestInfo {
                 name: g.name.clone(),
@@ -182,7 +211,10 @@ impl MeshRuntime {
 
     /// Whether a guest is registered under `name`.
     pub fn contains(&self, name: &str) -> bool {
-        self.registry.contains_key(name)
+        self.registry
+            .read()
+            .expect("registry lock")
+            .contains_key(name)
     }
 
     /// Run guest `name` against raw `input` bytes, returning the bytes it
@@ -270,9 +302,13 @@ impl MeshRuntime {
         self.call_run(&mut store, &instance, name, input)
     }
 
-    /// Clone a registered guest's compiled module (cheap — `Module` is `Arc`-backed).
+    /// Clone a registered guest's compiled module (cheap — `Module` is
+    /// `Arc`-backed) under a brief read lock, so an in-flight call is decoupled
+    /// from any concurrent hot-reload (#29).
     fn module(&self, name: &str) -> Result<Module> {
         self.registry
+            .read()
+            .expect("registry lock")
             .get(name)
             .map(|g| g.module.clone())
             .ok_or_else(|| MeshError::GuestNotFound(name.to_string()))
