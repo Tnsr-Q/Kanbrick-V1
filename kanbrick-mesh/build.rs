@@ -29,6 +29,12 @@ const GUESTS: &[(&str, &str, &str)] = &[
         "kanbrick_guest_compliance",
         "KANBRICK_COMPLIANCE_GUEST_WASM",
     ),
+    // Business guest: reporting (#43/#44).
+    (
+        "../guests/reporting",
+        "kanbrick_guest_reporting",
+        "KANBRICK_REPORTING_GUEST_WASM",
+    ),
 ];
 
 fn main() {
