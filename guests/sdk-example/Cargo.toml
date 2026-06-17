@@ -1,0 +1,23 @@
+# SDK reference guest — the documented example for issue #39.
+#
+# Built ONLY for `wasm32-wasip1` by kanbrick-mesh's build script and excluded
+# from the workspace build graph (root Cargo.toml `exclude`). It exercises every
+# capability the guest SDK exposes (firm_context / query_graph / emit / log) and
+# is loaded by kanbrick-mesh's integration test to prove the SDK end-to-end.
+[package]
+name = "kanbrick-guest-sdk-example"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+kanbrick-guest-sdk = { path = "../../kanbrick-guest-sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

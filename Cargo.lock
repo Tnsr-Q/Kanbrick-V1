@@ -1523,6 +1523,15 @@ name = "kanbrick-guest-reporting"
 version = "0.1.0"
 
 [[package]]
+name = "kanbrick-guest-sdk"
+version = "0.1.0"
+dependencies = [
+ "kanbrick-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "kanbrick-guest-valuation"
 version = "0.1.0"
 

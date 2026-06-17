@@ -16,22 +16,25 @@ members = [
     "kanbrick-auth",         # Ironclaw integration + clearance (L1 — Face/Guard)
     "kanbrick-mesh",         # Tachyon-Mesh runtime integration (L2 — Nerves)
     "kanbrick-discovery",    # graphify-rs graph analysis (L4 — Map)
+    "kanbrick-guest-sdk",    # Typed host-ABI bindings for WASM guests (#39)
     "kanbrick-api",          # HTTP API surface
     "kanbrick-cli",          # CLI tooling (seed loader, admin)
-    "guests/valuation",      # WASM guest scaffold — valuation models
-    "guests/reporting",      # WASM guest scaffold — report generation
-    "guests/compliance",     # WASM guest scaffold — compliance checks
+    "guests/valuation",      # WASM guest — valuation models (Phase 5)
+    "guests/reporting",      # WASM guest — report generation (Phase 5)
+    "guests/compliance",     # WASM guest — compliance checks (Phase 5)
 ]
 # Vendored upstreams are independent workspaces; keep them out of our graph.
-# `guests/echo` is a wasm32-wasip1-only fixture (ADR-0002): it is compiled to
-# WASM by kanbrick-mesh's build script, never for the host target, so it is
-# excluded from the workspace build graph.
+# `guests/echo` (raw-ABI fixture, ADR-0002) and `guests/sdk-example` (the #39 SDK
+# reference guest) are wasm32-wasip1-only: they are compiled to WASM by
+# kanbrick-mesh's build script, never for the host target, so they are excluded
+# from the workspace build graph.
 exclude = [
     "crates/sparrowdb",
     "crates/sparrowdb-ontology",
     "crates/ironclaw",
     "crates/tachyon-mesh",
     "guests/echo",
+    "guests/sdk-example",
 ]
 
 [workspace.package]
@@ -63,6 +66,7 @@ kanbrick-store = { path = "kanbrick-store", version = "0.1.0" }
 kanbrick-auth = { path = "kanbrick-auth", version = "0.1.0" }
 kanbrick-mesh = { path = "kanbrick-mesh", version = "0.1.0" }
 kanbrick-discovery = { path = "kanbrick-discovery", version = "0.1.0" }
+kanbrick-guest-sdk = { path = "kanbrick-guest-sdk", version = "0.1.0" }
 
 # Async runtime & web
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
