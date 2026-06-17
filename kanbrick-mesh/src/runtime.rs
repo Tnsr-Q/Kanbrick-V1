@@ -17,7 +17,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use kanbrick_auth::GuardedStore;
-use kanbrick_core::abi::{GraphQuery, GraphRows, GuestRequest, GuestResponse};
+use kanbrick_core::abi::{Event, GraphQuery, GraphRows, GuestRequest, GuestResponse};
 use kanbrick_core::FirmContext;
 use kanbrick_store::Store as GraphStore;
 use wasmtime::{
@@ -28,6 +28,7 @@ use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::WasiCtxBuilder;
 
 use crate::error::{MeshError, Result};
+use crate::event::EventBus;
 
 /// The import module name the host functions are published under; guests declare
 /// `#[link(wasm_import_module = "kanbrick")]` to use them.
@@ -87,6 +88,7 @@ struct HostState {
     limits: StoreLimits,
     ctx_json: Vec<u8>,
     query: Option<QueryBackend>,
+    bus: Option<EventBus>,
 }
 
 /// A compiled guest in the registry.
@@ -117,6 +119,7 @@ pub struct MeshRuntime {
     limits: RuntimeLimits,
     registry: RwLock<HashMap<String, RegisteredGuest>>,
     store: Option<Arc<GraphStore>>,
+    bus: Option<EventBus>,
 }
 
 impl MeshRuntime {
@@ -137,6 +140,7 @@ impl MeshRuntime {
             limits,
             registry: RwLock::new(HashMap::new()),
             store: None,
+            bus: None,
         })
     }
 
@@ -144,6 +148,13 @@ impl MeshRuntime {
     /// a bound store, a `kbk_query_graph` call traps. Returns `self` for chaining.
     pub fn with_store(mut self, store: Arc<GraphStore>) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    /// Bind an [`EventBus`] so guests' `emit` calls publish onto it (#27/#46).
+    /// Without a bound bus, an emitted event is logged and dropped. Builder-style.
+    pub fn with_bus(mut self, bus: EventBus) -> Self {
+        self.bus = Some(bus);
         self
     }
 
@@ -225,7 +236,7 @@ impl MeshRuntime {
     /// A fresh, sandboxed instance is created for the call and dropped afterward.
     pub fn dispatch(&self, name: &str, input: &[u8]) -> Result<Vec<u8>> {
         let module = self.module(name)?;
-        let mut store = self.new_store(Vec::new(), None, u64::MAX)?;
+        let mut store = self.new_store(Vec::new(), None, None, u64::MAX)?;
         let mut linker: Linker<HostState> = Linker::new(&self.engine);
         self.add_wasi(&mut linker)?;
         let instance = self.instantiate_guest(&mut store, name, &module, &linker)?;
@@ -293,11 +304,13 @@ impl MeshRuntime {
             store,
             ctx: ctx.clone(),
         });
-        let mut store = self.new_store(ctx_json, backend, epoch_deadline)?;
+        let mut store = self.new_store(ctx_json, backend, self.bus.clone(), epoch_deadline)?;
         let mut linker: Linker<HostState> = Linker::new(&self.engine);
         self.add_wasi(&mut linker)?;
         self.add_context_imports(&mut linker)?;
         self.add_query_imports(&mut linker)?;
+        self.add_event_imports(&mut linker)?;
+        self.add_log_imports(&mut linker)?;
         let instance = self.instantiate_guest(&mut store, name, &module, &linker)?;
         self.call_run(&mut store, &instance, name, input)
     }
@@ -394,6 +407,72 @@ impl MeshRuntime {
                     memory.write(&mut caller, out_ptr as usize, &out)?;
 
                     Ok(((out_ptr as u64) << 32) | (out_len as u64))
+                },
+            )
+            .map_err(|e| MeshError::Link(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Publish the event import (#27/#46): `kbk_emit_event(in_ptr, in_len)` reads
+    /// the [`Event`] JSON the guest wrote and publishes it onto the bound
+    /// [`EventBus`]. With no bus bound the event is logged and dropped (never
+    /// retained), matching the host-side [`MeshHost`](crate::MeshHost) behaviour.
+    fn add_event_imports(&self, linker: &mut Linker<HostState>) -> Result<()> {
+        linker
+            .func_wrap(
+                HOST_MODULE,
+                "kbk_emit_event",
+                |mut caller: Caller<'_, HostState>,
+                 in_ptr: u32,
+                 in_len: u32|
+                 -> wasmtime::Result<()> {
+                    let memory = guest_memory(&mut caller)?;
+                    let mut buf = vec![0u8; in_len as usize];
+                    memory.read(&caller, in_ptr as usize, &mut buf)?;
+                    let event: Event = serde_json::from_slice(&buf)
+                        .map_err(|e| wasmtime::Error::msg(format!("invalid Event: {e}")))?;
+                    match caller.data().bus.as_ref() {
+                        Some(bus) => {
+                            bus.emit(event);
+                        }
+                        None => tracing::info!(
+                            target: "kanbrick_mesh::guest",
+                            kind = %event.kind,
+                            "guest emitted an event but no bus is bound (dropped)"
+                        ),
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|e| MeshError::Link(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Publish the log import: `kbk_log(level, in_ptr, in_len)` records the UTF-8
+    /// message at the guest's chosen [`LogLevel`](kanbrick_core::abi::LogLevel)
+    /// (encoded `0=Error..4=Trace`) onto the host tracing target.
+    fn add_log_imports(&self, linker: &mut Linker<HostState>) -> Result<()> {
+        linker
+            .func_wrap(
+                HOST_MODULE,
+                "kbk_log",
+                |mut caller: Caller<'_, HostState>,
+                 level: u32,
+                 in_ptr: u32,
+                 in_len: u32|
+                 -> wasmtime::Result<()> {
+                    let memory = guest_memory(&mut caller)?;
+                    let mut buf = vec![0u8; in_len as usize];
+                    memory.read(&caller, in_ptr as usize, &mut buf)?;
+                    let message = String::from_utf8_lossy(&buf);
+                    match level {
+                        0 => tracing::error!(target: "kanbrick_mesh::guest", "{message}"),
+                        1 => tracing::warn!(target: "kanbrick_mesh::guest", "{message}"),
+                        2 => tracing::info!(target: "kanbrick_mesh::guest", "{message}"),
+                        3 => tracing::debug!(target: "kanbrick_mesh::guest", "{message}"),
+                        _ => tracing::trace!(target: "kanbrick_mesh::guest", "{message}"),
+                    }
+                    Ok(())
                 },
             )
             .map_err(|e| MeshError::Link(e.to_string()))?;
@@ -505,6 +584,7 @@ impl MeshRuntime {
         &self,
         ctx_json: Vec<u8>,
         query: Option<QueryBackend>,
+        bus: Option<EventBus>,
         epoch_deadline: u64,
     ) -> Result<Store<HostState>> {
         // Locked-down WASI: no preopened dirs, no network, no inherited stdio.
@@ -519,6 +599,7 @@ impl MeshRuntime {
                 limits,
                 ctx_json,
                 query,
+                bus,
             },
         );
         store.limiter(|s| &mut s.limits);

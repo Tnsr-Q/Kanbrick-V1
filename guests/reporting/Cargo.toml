@@ -1,6 +1,6 @@
 [package]
 name = "kanbrick-guest-reporting"
-description = "WASM guest scaffold — reporting."
+description = "WASM guest — portfolio dashboard reporting (clearance-tiered)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
+# cdylib → the wasm32-wasip1 guest; rlib → native unit tests of the pure logic.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+kanbrick-core.workspace = true
+kanbrick-guest-sdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true

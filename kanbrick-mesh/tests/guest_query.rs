@@ -48,8 +48,10 @@ fn seeded() -> (tempfile::TempDir, Arc<Store>) {
 }
 
 fn all_companies_query() -> Vec<u8> {
+    // A *detail* projection (the non-public `description`) so it is clearance-gated
+    // rather than the public company roster (ADR-0005).
     serde_json::to_vec(&GraphQuery::new(
-        "MATCH (c:Company) RETURN c.company_id, c.name",
+        "MATCH (c:Company) RETURN c.company_id, c.name, c.description",
     ))
     .unwrap()
 }
@@ -92,9 +94,11 @@ fn guest_query_against_an_unfilterable_projection_is_denied() {
     rt.register_module("q", "0.1.0", QUERY_PROXY_WAT.as_bytes())
         .unwrap();
 
-    // An L3 caller projecting neither email nor company_id is denied (fail-closed)
-    // — the denial surfaces to the guest as a trapped query call.
-    let query = serde_json::to_vec(&GraphQuery::new("MATCH (c:Company) RETURN c.name")).unwrap();
+    // An L3 caller projecting a *sensitive* field with no clearance key is denied
+    // (fail-closed) — the denial surfaces to the guest as a trapped query call.
+    // (`c.name` alone would be the public roster; `c.description` is gated.)
+    let query =
+        serde_json::to_vec(&GraphQuery::new("MATCH (c:Company) RETURN c.description")).unwrap();
     let l3 = FirmContext::new(
         Uuid::new_v4(),
         "tyler.begemann@kanbrick.com",
