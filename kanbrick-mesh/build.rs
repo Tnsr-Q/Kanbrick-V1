@@ -35,6 +35,12 @@ const GUESTS: &[(&str, &str, &str)] = &[
         "kanbrick_guest_reporting",
         "KANBRICK_REPORTING_GUEST_WASM",
     ),
+    // Business guest: valuation (#45).
+    (
+        "../guests/valuation",
+        "kanbrick_guest_valuation",
+        "KANBRICK_VALUATION_GUEST_WASM",
+    ),
 ];
 
 fn main() {
@@ -80,10 +86,13 @@ fn build_guest(
         .arg("--target-dir")
         .arg(&guest_target)
         // Isolate from the parent build's rustflags (`-D warnings`, encoded
-        // flags) and inherited target-dir so each guest builds deterministically.
+        // flags), inherited target-dir, and any clippy/rustc wrapper (so the wasm
+        // artifact is a plain build even when the parent is `cargo clippy`).
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("CARGO_TARGET_DIR")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("RUSTC_WRAPPER")
         .status()
         .unwrap_or_else(|e| panic!("failed to invoke `{cargo}` to build {rel_dir}: {e}"));
 
