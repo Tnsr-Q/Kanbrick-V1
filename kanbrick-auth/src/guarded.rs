@@ -200,7 +200,11 @@ mod tests {
 
     use kanbrick_core::abi::GraphQuery;
 
-    const ALL_COMPANY_IDS: &str = "MATCH (c:Company) RETURN c.company_id, c.name, c.segment";
+    // A *detail* projection (carries the non-public `description`), so it is
+    // clearance-gated rather than the public company roster (ADR-0005).
+    const ALL_COMPANY_DETAIL: &str = "MATCH (c:Company) RETURN c.company_id, c.name, c.description";
+    // The public company roster: company identity only (ADR-0005).
+    const COMPANY_ROSTER: &str = "MATCH (c:Company) RETURN c.company_id, c.name, c.segment";
 
     #[test]
     fn query_graph_l5_sees_every_row() {
@@ -208,20 +212,20 @@ mod tests {
         let ceo = ctx_l5();
         let guarded = GuardedStore::new(&store, &ceo).unwrap();
         let rows = guarded
-            .query_graph(&GraphQuery::new(ALL_COMPANY_IDS))
+            .query_graph(&GraphQuery::new(ALL_COMPANY_DETAIL))
             .unwrap();
         assert_eq!(rows.len(), 9);
     }
 
     #[test]
-    fn query_graph_l3_is_clearance_filtered_to_their_segment() {
+    fn query_graph_l3_detail_is_clearance_filtered_to_their_segment() {
         let (_d, store) = seeded();
         let lead = ctx("tyler.begemann@kanbrick.com", ClearanceLevel::L3);
         let guarded = GuardedStore::new(&store, &lead).unwrap();
-        // The same all-companies query a guest issues comes back filtered to the
-        // caller's 5 segment companies — never the other 4.
+        // The same all-companies *detail* query a guest issues comes back filtered
+        // to the caller's 5 segment companies — never the other 4.
         let rows = guarded
-            .query_graph(&GraphQuery::new(ALL_COMPANY_IDS))
+            .query_graph(&GraphQuery::new(ALL_COMPANY_DETAIL))
             .unwrap();
         assert_eq!(rows.len(), 5);
         for row in &rows.rows {
@@ -231,14 +235,28 @@ mod tests {
     }
 
     #[test]
-    fn query_graph_fails_closed_on_an_unfilterable_projection() {
+    fn query_graph_public_roster_is_visible_to_every_clearance() {
+        // PUBLIC_DATA (ADR-0005): company identity is readable by all tiers. An L1
+        // who manages nothing still reads the full 9-company roster.
+        let (_d, store) = seeded();
+        let l1 = ctx("dana.prescott@kanbrick.com", ClearanceLevel::L1);
+        let guarded = GuardedStore::new(&store, &l1).unwrap();
+        let rows = guarded
+            .query_graph(&GraphQuery::new(COMPANY_ROSTER))
+            .unwrap();
+        assert_eq!(rows.len(), 9);
+    }
+
+    #[test]
+    fn query_graph_fails_closed_on_a_sensitive_unfilterable_projection() {
         let (_d, store) = seeded();
         let lead = ctx("tyler.begemann@kanbrick.com", ClearanceLevel::L3);
         let guarded = GuardedStore::new(&store, &lead).unwrap();
-        // A projection exposing neither `email` nor `company_id` cannot be proven
-        // safe, so a non-see-all caller is denied outright.
+        // A *sensitive* projection exposing neither `email` nor `company_id` cannot
+        // be proven safe, so a non-see-all caller is denied outright. (`c.name`
+        // alone would be the public roster; `c.description` is gated.)
         let err = guarded
-            .query_graph(&GraphQuery::new("MATCH (c:Company) RETURN c.name"))
+            .query_graph(&GraphQuery::new("MATCH (c:Company) RETURN c.description"))
             .unwrap_err();
         assert_eq!(err.kind(), kanbrick_core::ErrorKind::Unauthorized);
     }

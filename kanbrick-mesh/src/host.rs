@@ -171,7 +171,9 @@ mod tests {
         (dir, std::sync::Arc::new(store))
     }
 
-    const ALL_COMPANIES: &str = "MATCH (c:Company) RETURN c.company_id, c.name";
+    // A *detail* projection (carries the non-public `description`), so it is
+    // clearance-gated rather than the public roster (ADR-0005).
+    const ALL_COMPANIES: &str = "MATCH (c:Company) RETURN c.company_id, c.name, c.description";
 
     #[test]
     fn query_graph_routes_through_guardedstore_and_filters_by_clearance() {

@@ -153,68 +153,63 @@ impl ClearanceScope {
 
     /// Fail-closed clearance filter for generic JSON result rows (issue #24).
     ///
-    /// Each row is classified by the security-relevant key it exposes: an
-    /// `email` marks a person row, a `company_id` marks a company row. Rows the
-    /// caller may see are kept; rows they may not are dropped — reusing the exact
-    /// person/company visibility of [`retain_persons`](Self::retain_persons) and
-    /// [`retain_companies`](Self::retain_companies).
+    /// Each row is classified by the security-relevant keys it exposes:
     ///
-    /// A row that exposes **neither** key cannot be proven safe to return, so for
-    /// a non-see-all caller the whole query is **denied** (it effectively requires
-    /// L4+). This is the conservative default: a guest cannot dodge filtering by
-    /// projecting raw columns. L4/L5 callers see every row unfiltered.
+    /// * a **person row** (`email`) is kept iff the caller may see that person;
+    /// * a **public roster row** — every projected key is a
+    ///   [`PUBLIC_COMPANY_FIELDS`] entry (`company_id`/`name`/`segment`) — is kept
+    ///   for **everyone**: company identity is public (`PUBLIC_DATA`, ADR-0005);
+    /// * a **company detail row** (`company_id` plus any non-public field) is kept
+    ///   iff the caller may see that company;
+    /// * any other row — a sensitive projection exposing no clearance key — is
+    ///   **denied** (fail-closed): a guest cannot dodge filtering by projecting raw
+    ///   columns. L4/L5 callers see every row unfiltered.
     pub fn retain_rows(&self, rows: Vec<JsonValue>) -> Result<Vec<JsonValue>> {
         if self.sees_all {
             return Ok(rows);
         }
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
-            match row_clearance_key(&row) {
-                Some(RowKey::Person(email)) => {
-                    if self.can_see_person(email) {
-                        out.push(row);
-                    }
-                }
-                Some(RowKey::Company(id)) => {
-                    if self.can_see_company(id) {
-                        out.push(row);
-                    }
-                }
-                None => {
-                    // Unfilterable projection: deny rather than risk leaking.
-                    return Err(Error::AccessDenied {
-                        required: ClearanceLevel::L4,
-                        actual: self.clearance,
-                    });
-                }
+            if self.row_is_visible(&row)? {
+                out.push(row);
             }
         }
         Ok(out)
     }
+
+    /// Decide whether one generic result row is visible to this (non-see-all)
+    /// caller: `Ok(true)` keep, `Ok(false)` drop, `Err` deny the whole query.
+    fn row_is_visible(&self, row: &JsonValue) -> Result<bool> {
+        let denied = || Error::AccessDenied {
+            required: ClearanceLevel::L4,
+            actual: self.clearance,
+        };
+        let obj = row.as_object().ok_or_else(denied)?;
+
+        if let Some(email) = obj.get("email").and_then(JsonValue::as_str) {
+            return Ok(self.can_see_person(email));
+        }
+        // Public roster: company identity (company_id/name/segment) is readable by
+        // every clearance (ADR-0005). A row projecting only those is always kept.
+        if !obj.is_empty()
+            && obj
+                .keys()
+                .all(|k| PUBLIC_COMPANY_FIELDS.contains(&k.as_str()))
+        {
+            return Ok(true);
+        }
+        if let Some(company_id) = obj.get("company_id").and_then(JsonValue::as_str) {
+            return Ok(self.can_see_company(company_id));
+        }
+        // Sensitive projection with no clearance key: cannot be proven safe.
+        Err(denied())
+    }
 }
 
-/// The security-relevant identity of a result row, used by
-/// [`ClearanceScope::retain_rows`].
-enum RowKey<'a> {
-    /// A person row, keyed by its `email`.
-    Person(&'a str),
-    /// A company row, keyed by its `company_id`.
-    Company(&'a str),
-}
-
-/// Classify a result row by the clearance key it exposes. A row must be a JSON
-/// object with a string `email` (person) or `company_id` (company); anything
-/// else is unclassifiable (and therefore denied for non-privileged callers).
-fn row_clearance_key(row: &JsonValue) -> Option<RowKey<'_>> {
-    let obj = row.as_object()?;
-    if let Some(email) = obj.get("email").and_then(JsonValue::as_str) {
-        return Some(RowKey::Person(email));
-    }
-    if let Some(company_id) = obj.get("company_id").and_then(JsonValue::as_str) {
-        return Some(RowKey::Company(company_id));
-    }
-    None
-}
+/// Company fields that are **public** — the portfolio roster identity, readable
+/// by every clearance (`PUBLIC_DATA`, ADR-0005). All other company fields, and
+/// all person and financial data, remain clearance-gated.
+pub const PUBLIC_COMPANY_FIELDS: &[&str] = &["company_id", "name", "segment"];
 
 #[cfg(test)]
 mod tests {
@@ -318,5 +313,84 @@ mod tests {
         // ...but can read their own tier and below.
         assert!(scope.can_view_sensitive_of(ClearanceLevel::L2));
         assert!(scope.can_view_sensitive_of(ClearanceLevel::L1));
+    }
+
+    // ---- public company roster (PUBLIC_DATA, ADR-0005). ----
+
+    fn roster_rows() -> Vec<JsonValue> {
+        vec![
+            serde_json::json!({"company_id": "JMTS", "name": "JM Test Systems", "segment": "Testing & Lab Services"}),
+            serde_json::json!({"company_id": "KEEP", "name": "Keep Supply", "segment": "Industrial Distribution"}),
+        ]
+    }
+
+    #[test]
+    fn l1_sees_the_full_public_company_roster() {
+        let (_d, store) = seeded();
+        // Dana is L1 and manages no companies — yet company identity is public.
+        let scope = ClearanceScope::resolve(
+            &store,
+            &ctx("dana.prescott@kanbrick.com", ClearanceLevel::L1),
+        )
+        .unwrap();
+        assert!(!scope.sees_all());
+        let kept = scope.retain_rows(roster_rows()).unwrap();
+        assert_eq!(kept.len(), 2, "L1 reads the public company roster");
+    }
+
+    #[test]
+    fn company_detail_projection_stays_gated() {
+        let (_d, store) = seeded();
+        // Tyler (L3) sees only his 5 segment companies in *detail*.
+        let scope = ClearanceScope::resolve(
+            &store,
+            &ctx("tyler.begemann@kanbrick.com", ClearanceLevel::L3),
+        )
+        .unwrap();
+        // A detail row carries a non-public field (description) → gated.
+        let rows = vec![
+            serde_json::json!({"company_id": "JMTS", "name": "JM Test Systems", "description": "x"}),
+            serde_json::json!({"company_id": "KEEP", "name": "Keep Supply", "description": "y"}),
+        ];
+        let kept = scope.retain_rows(rows).unwrap();
+        assert_eq!(
+            kept.len(),
+            1,
+            "only the in-segment company's detail is kept"
+        );
+        assert_eq!(kept[0]["company_id"], "JMTS");
+    }
+
+    #[test]
+    fn sensitive_projection_without_a_key_is_denied() {
+        let (_d, store) = seeded();
+        let scope = ClearanceScope::resolve(
+            &store,
+            &ctx("tyler.begemann@kanbrick.com", ClearanceLevel::L3),
+        )
+        .unwrap();
+        // description alone is sensitive and carries no clearance key → fail-closed.
+        let err = scope
+            .retain_rows(vec![serde_json::json!({"description": "secret"})])
+            .unwrap_err();
+        assert_eq!(err.kind(), kanbrick_core::ErrorKind::Unauthorized);
+    }
+
+    #[test]
+    fn person_rows_remain_gated_despite_public_companies() {
+        let (_d, store) = seeded();
+        let scope = ClearanceScope::resolve(
+            &store,
+            &ctx("dana.prescott@kanbrick.com", ClearanceLevel::L1),
+        )
+        .unwrap();
+        // Personnel are not public: an L1 sees only their own person row.
+        let rows = vec![
+            serde_json::json!({"email": "dana.prescott@kanbrick.com"}),
+            serde_json::json!({"email": "tracy.brittcool@kanbrick.com"}),
+        ];
+        let kept = scope.retain_rows(rows).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0]["email"], "dana.prescott@kanbrick.com");
     }
 }

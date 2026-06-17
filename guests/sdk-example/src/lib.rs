@@ -22,12 +22,15 @@ fn handle(request: GuestRequest) -> Result<GuestResponse> {
 
     let ctx = sdk::firm_context()?;
 
-    // The caller chooses the query; default to counting visible companies.
+    // The caller chooses the query; default to counting visible companies. The
+    // projection includes the non-public `description`, so it is clearance-gated
+    // (detail) rather than the public roster (ADR-0005) — which is what lets the
+    // example demonstrate per-clearance filtering (L3 → 5, L5 → 9).
     let cypher = request
         .payload
         .get("query")
         .and_then(|v| v.as_str())
-        .unwrap_or("MATCH (c:Company) RETURN c.company_id, c.name");
+        .unwrap_or("MATCH (c:Company) RETURN c.company_id, c.name, c.description");
     let rows = sdk::query_graph(&GraphQuery::new(cypher))?;
 
     sdk::emit(&sdk::Event::with_payload(
