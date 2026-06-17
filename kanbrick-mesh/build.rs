@@ -23,6 +23,12 @@ const GUESTS: &[(&str, &str, &str)] = &[
         "kanbrick_guest_sdk_example",
         "KANBRICK_SDK_EXAMPLE_GUEST_WASM",
     ),
+    // Business guest: compliance (#41/#42).
+    (
+        "../guests/compliance",
+        "kanbrick_guest_compliance",
+        "KANBRICK_COMPLIANCE_GUEST_WASM",
+    ),
 ];
 
 fn main() {
