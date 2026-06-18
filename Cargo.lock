@@ -1447,6 +1447,7 @@ dependencies = [
  "http-body-util",
  "kanbrick-auth",
  "kanbrick-core",
+ "kanbrick-mesh",
  "kanbrick-store",
  "serde",
  "serde_json",

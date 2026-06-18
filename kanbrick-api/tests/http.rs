@@ -32,7 +32,7 @@ fn app_with_logins() -> (tempfile::TempDir, axum::Router) {
         svc.set_password("elena.ruiz@kanbrick.com", "analyst-pw")
             .unwrap();
     }
-    (dir, router(AppState::new(store, jwt)))
+    (dir, router(AppState::new(store, jwt).unwrap()))
 }
 
 async fn body_string(resp: axum::response::Response) -> String {
