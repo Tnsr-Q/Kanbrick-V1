@@ -14,7 +14,9 @@ path = "src/main.rs"
 [dependencies]
 kanbrick-core.workspace = true
 kanbrick-store.workspace = true
+kanbrick-auth.workspace = true
 clap.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

@@ -7,7 +7,7 @@
 //! * `get_firm_context` / `log` are fully live here.
 //! * `emit_event` buffers events until the real pub/sub bus lands (#27).
 //! * `query_graph` routes through the clearance-enforcing
-//!   [`GuardedStore`](kanbrick_auth::GuardedStore) (#24) when a store is bound;
+//!   [`GuardedStore`] (#24) when a store is bound;
 //!   without one it returns a clear error.
 //!
 //! The WASM-facing side of context propagation (the `kbk_ctx_*` imports) lives in

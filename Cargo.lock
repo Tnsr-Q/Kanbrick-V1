@@ -1481,7 +1481,9 @@ dependencies = [
 name = "kanbrick-cli"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
+ "kanbrick-auth",
  "kanbrick-core",
  "kanbrick-store",
  "tempfile",
