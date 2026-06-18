@@ -1,0 +1,6 @@
+# Keep the build context small and the build reproducible.
+target/
+guests/*/target/
+.git/
+releases/
+*.md

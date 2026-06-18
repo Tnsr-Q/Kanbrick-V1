@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let store = Store::open(&cli.db)?;
     let jwt = JwtAuthenticator::new(secret.as_bytes(), Duration::hours(cli.ttl_hours));
-    let app = router(AppState::new(store, jwt));
+    let app = router(AppState::new(store, jwt)?);
 
     let addr = format!("0.0.0.0:{}", cli.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

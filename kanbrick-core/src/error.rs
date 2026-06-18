@@ -3,12 +3,12 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Convenience alias for results that fail with [`Error`].
+/// Convenience alias for results that fail with [`enum@Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Coarse classification of an [`Error`].
+/// Coarse classification of an [`enum@Error`].
 ///
-/// Where [`Error`] carries the specific failure (with its message), `ErrorKind`
+/// Where [`enum@Error`] carries the specific failure (with its message), `ErrorKind`
 /// is the stable category callers branch on — e.g. to map onto an HTTP status
 /// in the API layer — without matching every concrete variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

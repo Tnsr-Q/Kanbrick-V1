@@ -19,6 +19,7 @@ path = "src/main.rs"
 kanbrick-core.workspace = true
 kanbrick-store.workspace = true
 kanbrick-auth.workspace = true
+kanbrick-mesh.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -32,3 +33,4 @@ clap.workspace = true
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tempfile = "3"
+uuid.workspace = true
