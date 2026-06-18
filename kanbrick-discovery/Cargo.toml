@@ -14,6 +14,9 @@ kanbrick-auth.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Project-scope grant lifecycle (#57): persisted requests/grants/skills.
+chrono.workspace = true
+uuid.workspace = true
 
 # Discovery engine (Phase 4) — see ADR-0003. graphify-rs 0.8 is a CLI binary;
 # its reusable library lives in these sub-crates.
@@ -35,4 +38,3 @@ codegraph = ["dep:graphify-build", "dep:graphify-extract"]
 
 [dev-dependencies]
 tempfile = "3"
-uuid.workspace = true

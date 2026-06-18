@@ -23,6 +23,7 @@
 pub mod cache;
 #[cfg(feature = "codegraph")]
 pub mod codegraph;
+pub mod grants;
 pub mod graph;
 pub mod influence;
 pub mod model;
@@ -31,6 +32,7 @@ pub mod portfolio;
 pub mod scope;
 
 pub use cache::{CacheStats, DiscoveryCache};
+pub use grants::{GrantedScope, RequestStatus, ScopeGrants, ScopeRequest, ScopeStatus, Skill};
 pub use graph::DiscoveryGraph;
 pub use model::{
     CompanyRef, CrossSegmentLink, InfluenceRank, ManageScope, OrgNeighborhood, PersonRef,

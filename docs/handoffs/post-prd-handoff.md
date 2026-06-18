@@ -84,14 +84,19 @@ asked; **never put the model identifier in committed artifacts**.
 ## 4. Remaining work (prioritized)
 
 ### Genuinely outstanding
-1. **#57 — per-project scopes + customizable per-project agents/skills** (operator
-   request, HITL). The **enforcement primitive already exists**:
-   `kanbrick_discovery::ProjectScope` (additive, composable `VisibilityScope`).
-   What's left is the *lifecycle*: a request → approval → grant workflow,
-   persistence (likely `(:ScopeRequest)`/`(:ProjectScope)`/`(:Skill)` nodes in
-   SparrowDB), eligible-grantor rules (clearance threshold and/or
-   `common_manager`), and binding per-project skills/agents to a granted scope.
-   See issue #57's "Open design questions" — bring them to the operator.
+1. **#57 — per-project scopes + customizable per-project agents/skills.** **Core
+   DONE** (ADR-0007, operator answered the four design questions). The lifecycle
+   lives in `kanbrick_discovery::grants::ScopeGrants`: request → **dual-gate**
+   approve/deny (clearance ≥ L4 **and** in the requester's management chain, or L5
+   override) → persisted `(:ScopeRequest)`/`(:ProjectScope)`/`(:Skill)` in
+   SparrowDB → additive enforcement via `active_scope_for` composing a
+   `ProjectScope` → `authorize_skill` (grantee + clearance gate, returns the
+   composed scope; **identity stays host-authoritative — never injected**) →
+   `revoke`/`expire_due` with request cascade + discovery-cache invalidation. The
+   whole chain is audited. **Remaining (flagged, additive):** (a) HTTP endpoints
+   on `kanbrick-api`; (b) wire the composed scope from `authorize_skill` into the
+   mesh guest `query_graph` path; (c) schedule `expire_due` via `Scheduler`. No
+   `granted_segments` yet (expand a segment grant to its companies/persons).
 2. ~~**#38 — code-graph ingest**~~ **DONE** (ADR-0006). `kanbrick_discovery::
    codegraph` runs `graphify-extract` → `graphify-build::build_from_extraction`,
    offers `export_cypher` as the inspectable artifact, and ingests into the same
