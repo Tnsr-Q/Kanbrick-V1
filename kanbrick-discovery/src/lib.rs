@@ -21,6 +21,8 @@
 //!   discovery answer never reveals a node the caller could not see normally.
 
 pub mod cache;
+#[cfg(feature = "codegraph")]
+pub mod codegraph;
 pub mod graph;
 pub mod influence;
 pub mod model;

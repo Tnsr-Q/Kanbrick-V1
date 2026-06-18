@@ -92,13 +92,16 @@ asked; **never put the model identifier in committed artifacts**.
    SparrowDB), eligible-grantor rules (clearance threshold and/or
    `common_manager`), and binding per-project skills/agents to a granted scope.
    See issue #57's "Open design questions" — bring them to the operator.
-2. **#38 — code-graph ingest** (deferred in Phase 4, HITL: **non-LLM/AST** chosen,
-   ADR-0003 §6). Use `graphify-extract` (`collect_files`/`extract`) →
-   `graphify-build::build_from_extraction` → `graphify-export::export_cypher`, then
-   ingest into the same SparrowDB with code-ontology labels
-   (Function/Module/Document + CALLS/IMPORTS/DEFINED_IN/REFERENCES). Those crates
-   are **already declared** in `[workspace.dependencies]`; no manifest change.
-   Watch: re-ingest must not duplicate nodes (use `MERGE`/inline, per ADR-0001).
+2. ~~**#38 — code-graph ingest**~~ **DONE** (ADR-0006). `kanbrick_discovery::
+   codegraph` runs `graphify-extract` → `graphify-build::build_from_extraction`,
+   offers `export_cypher` as the inspectable artifact, and ingests into the same
+   SparrowDB under the Function/Module/Document + CALLS/IMPORTS/DEFINED_IN/
+   REFERENCES ontology with **idempotent** node `MERGE` + inline relationship
+   `MERGE` (re-ingest does not duplicate). Behind the non-default `codegraph`
+   feature so the deployed API stays network-free (CI runs it via
+   `--all-features`); operate it with `kanbrick-cli code-ingest --root <dir>`
+   built with `--features codegraph`. The struct/trait/enum→`Function` fold is a
+   flagged, revisitable schema choice (ADR-0006 §2).
 3. **#53 — finish deployment artifacts** (env-gated, see §6). The self-contained
    binary is **done** (23 MB, embeds all guests, smoke-tested). Remaining: build +
    smoke the **Docker image** (`scripts/docker-release.sh`, needs a running Docker
@@ -126,12 +129,14 @@ asked; **never put the model identifier in committed artifacts**.
 The auto-close keyword gotcha (§1) means **#6–#52 are implemented and merged but
 still show OPEN**, and #53 is partially done. The real state:
 
-- **Implemented & merged — should be CLOSED:** #6–#37 **except #38**, and #39–#52.
-  (Phases 1–6: store, auth, mesh, discovery, guests, testing/validation.) Close
-  each with a note pointing at the merge (Phase PRs #55/#56/#58/#59/#60).
+- **Implemented & merged — should be CLOSED:** #6–#52 (Phases 1–6: store, auth,
+  mesh, discovery, guests, testing/validation). Close each with a note pointing
+  at the merge (Phase PRs #55/#56/#58/#59/#60).
+- **#38 — now DONE** (ADR-0006, `codegraph` module); close it pointing at the
+  follow-up merge.
 - **#53 — keep open**, scoped down to "Docker image build/smoke + musl static"
   (the binary half is done).
-- **#38, #57 — keep open** (genuinely outstanding, above).
+- **#57 — keep open** (genuinely outstanding, above).
 
 Before closing in bulk, spot-check a couple against the code so nothing is closed
 prematurely. Future PRs: use `closes #N` **once per issue**.

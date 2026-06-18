@@ -15,8 +15,16 @@ path = "src/main.rs"
 kanbrick-core.workspace = true
 kanbrick-store.workspace = true
 kanbrick-auth.workspace = true
+# Optional: enables the `code-ingest` subcommand (#38). Off by default so the
+# default CLI build stays lean and network-free; build with `--features codegraph`.
+kanbrick-discovery = { workspace = true, optional = true }
 clap.workspace = true
 chrono.workspace = true
+
+[features]
+# Code-graph ingest command (#38). Pulls the discovery crate's tree-sitter
+# extractor; exercised in CI via `--all-features`.
+codegraph = ["dep:kanbrick-discovery", "kanbrick-discovery/codegraph"]
 
 [dev-dependencies]
 tempfile = "3"
