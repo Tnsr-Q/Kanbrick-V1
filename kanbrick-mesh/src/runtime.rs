@@ -13,6 +13,7 @@
 //! in this slice fuel is provisioned generously and no epoch ticker runs.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -107,6 +108,49 @@ pub struct GuestInfo {
     pub version: String,
 }
 
+/// Per-guest invocation counters (#63, Track A). All fields are atomic so they
+/// can be read and updated under a shared (read) lock; `active` is signed so it
+/// can be incremented when a call starts and decremented when it finishes,
+/// including on the error and timeout paths.
+#[derive(Debug, Default)]
+struct GuestCounters {
+    /// Calls currently executing (a gauge: up on entry, down on exit).
+    active: AtomicI64,
+    /// Calls that returned a response.
+    completed: AtomicU64,
+    /// Calls that failed (trap, bad output, missing guest, resource limit, …).
+    failed: AtomicU64,
+    /// Calls killed for exceeding their wall-clock budget.
+    timed_out: AtomicU64,
+}
+
+/// Invocation metrics keyed by guest name (#63, Track A).
+///
+/// Counters are keyed by name rather than tied to a compiled [`Module`], so a
+/// guest's totals are **continuous across a hot-reload** ([`MeshRuntime::reload_module`]).
+/// Every invocation funnels through [`MeshRuntime::invoke_with_deadline`], so both
+/// the direct API path and the [`Scheduler`](crate::Scheduler) (trigger/event)
+/// path are accounted here.
+#[derive(Debug, Default)]
+struct MeshMetrics {
+    guests: RwLock<HashMap<String, Arc<GuestCounters>>>,
+}
+
+/// A point-in-time snapshot of one guest's invocation counters (#63, Track A).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestMetric {
+    /// The guest's registered name.
+    pub name: String,
+    /// Calls currently executing.
+    pub active: i64,
+    /// Calls that returned a response.
+    pub completed: u64,
+    /// Calls that failed (trap, bad output, missing guest, resource limit, …).
+    pub failed: u64,
+    /// Calls killed for exceeding their wall-clock budget.
+    pub timed_out: u64,
+}
+
 /// The WASM runtime: a wasmtime engine plus a registry of loadable guests.
 ///
 /// The registry is behind an [`RwLock`] so a guest can be hot-reloaded (#29)
@@ -120,6 +164,7 @@ pub struct MeshRuntime {
     registry: RwLock<HashMap<String, RegisteredGuest>>,
     store: Option<Arc<GraphStore>>,
     bus: Option<EventBus>,
+    metrics: MeshMetrics,
 }
 
 impl MeshRuntime {
@@ -141,6 +186,7 @@ impl MeshRuntime {
             registry: RwLock::new(HashMap::new()),
             store: None,
             bus: None,
+            metrics: MeshMetrics::default(),
         })
     }
 
@@ -200,6 +246,14 @@ impl MeshRuntime {
                 module,
             },
         );
+        // Ensure a metrics entry exists for the guest. `or_default` preserves any
+        // existing counters, so totals carry across a hot-reload (#29).
+        self.metrics
+            .guests
+            .write()
+            .expect("metrics lock")
+            .entry(name.to_string())
+            .or_default();
         tracing::debug!(target: "kanbrick_mesh::registry", guest = name, version, "registered guest");
         Ok(())
     }
@@ -269,6 +323,42 @@ impl MeshRuntime {
         request: &GuestRequest,
         epoch_deadline: u64,
     ) -> Result<GuestResponse> {
+        // Account the invocation here, the single choke point every typed call
+        // funnels through (direct API path *and* the Scheduler), so the pressure
+        // metrics (#63) cover both. Unknown guests have no counter — they fail
+        // below with `GuestNotFound` and are not tracked (no unbounded growth).
+        let counters = self.counters_for(name);
+        if let Some(c) = &counters {
+            c.active.fetch_add(1, Ordering::Relaxed);
+        }
+        let result = self.invoke_inner(name, ctx, request, epoch_deadline);
+        if let Some(c) = &counters {
+            c.active.fetch_sub(1, Ordering::Relaxed);
+            match &result {
+                Ok(_) => {
+                    c.completed.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(MeshError::Timeout { .. }) => {
+                    c.timed_out.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(_) => {
+                    c.failed.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        result
+    }
+
+    /// The actual typed invocation: encode the request, run the guest, decode the
+    /// response. Wrapped by [`invoke_with_deadline`](Self::invoke_with_deadline),
+    /// which records the metrics around it.
+    fn invoke_inner(
+        &self,
+        name: &str,
+        ctx: &FirmContext,
+        request: &GuestRequest,
+        epoch_deadline: u64,
+    ) -> Result<GuestResponse> {
         let input = request.to_json_bytes().map_err(|e| MeshError::BadOutput {
             name: name.to_string(),
             detail: format!("encoding request: {e}"),
@@ -278,6 +368,40 @@ impl MeshRuntime {
             name: name.to_string(),
             detail: format!("decoding response: {e}"),
         })
+    }
+
+    /// Fetch a registered guest's counters, or `None` if the guest is unknown.
+    /// Registered guests always have an entry (created in [`install`](Self::install)),
+    /// so a hit here means the call will actually be dispatched.
+    fn counters_for(&self, name: &str) -> Option<Arc<GuestCounters>> {
+        self.metrics
+            .guests
+            .read()
+            .expect("metrics lock")
+            .get(name)
+            .map(Arc::clone)
+    }
+
+    /// A snapshot of every registered guest's invocation counters, sorted by name
+    /// for deterministic output (#63, Track A). Consumed by `kanbrick-api`'s
+    /// `/metrics` endpoint.
+    pub fn metrics_snapshot(&self) -> Vec<GuestMetric> {
+        let mut out: Vec<GuestMetric> = self
+            .metrics
+            .guests
+            .read()
+            .expect("metrics lock")
+            .iter()
+            .map(|(name, c)| GuestMetric {
+                name: name.clone(),
+                active: c.active.load(Ordering::Relaxed),
+                completed: c.completed.load(Ordering::Relaxed),
+                failed: c.failed.load(Ordering::Relaxed),
+                timed_out: c.timed_out.load(Ordering::Relaxed),
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
     }
 
     /// Run guest `name` against raw `input`, injecting `ctx` as the
@@ -823,5 +947,113 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, MeshError::GuestNotFound(n) if n == "nope"));
+    }
+
+    // ---- #63 (Track A): per-guest invocation metrics. ----
+
+    /// A hermetic guest that always traps in `kbk_run` (proves failure counting).
+    const TRAP_WAT: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (func (export "kbk_alloc") (param $len i32) (result i32) i32.const 1024)
+          (func (export "kbk_run") (param $ptr i32) (param $len i32) (result i64)
+            unreachable))
+    "#;
+
+    fn metric_for<'a>(snapshot: &'a [GuestMetric], name: &str) -> &'a GuestMetric {
+        snapshot
+            .iter()
+            .find(|m| m.name == name)
+            .unwrap_or_else(|| panic!("no metric for {name} in {snapshot:?}"))
+    }
+
+    #[test]
+    fn registered_guest_starts_with_zeroed_metrics() {
+        let rt = runtime_with_echo();
+        let snap = rt.metrics_snapshot();
+        let echo = metric_for(&snap, "echo");
+        assert_eq!(echo.active, 0);
+        assert_eq!(echo.completed, 0);
+        assert_eq!(echo.failed, 0);
+        assert_eq!(echo.timed_out, 0);
+    }
+
+    #[test]
+    fn successful_invocations_count_as_completed() {
+        let rt = runtime_with_echo();
+        let context = ctx("analyst@kanbrick.com", kanbrick_core::ClearanceLevel::L3);
+        for _ in 0..3 {
+            rt.invoke(
+                "echo",
+                &context,
+                &GuestRequest::new(serde_json::json!({"n": 1})),
+            )
+            .unwrap();
+        }
+        let snap = rt.metrics_snapshot();
+        let echo = metric_for(&snap, "echo");
+        assert_eq!(echo.completed, 3);
+        assert_eq!(echo.active, 0, "gauge returns to zero after each call");
+        assert_eq!(echo.failed, 0);
+    }
+
+    #[test]
+    fn trapping_invocation_counts_as_failed() {
+        let mut rt = MeshRuntime::new().unwrap();
+        rt.register_module("trap", "0.0.0", TRAP_WAT.as_bytes())
+            .unwrap();
+        let context = ctx("x@kanbrick.com", kanbrick_core::ClearanceLevel::L1);
+        let err = rt
+            .invoke(
+                "trap",
+                &context,
+                &GuestRequest::new(serde_json::Value::Null),
+            )
+            .unwrap_err();
+        assert!(matches!(err, MeshError::Trap { .. }));
+        let snap = rt.metrics_snapshot();
+        let trap = metric_for(&snap, "trap");
+        assert_eq!(trap.failed, 1);
+        assert_eq!(trap.completed, 0);
+        assert_eq!(trap.active, 0);
+    }
+
+    #[test]
+    fn unknown_guest_is_not_tracked() {
+        let rt = runtime_with_echo();
+        let context = ctx("x@kanbrick.com", kanbrick_core::ClearanceLevel::L1);
+        let _ = rt.invoke(
+            "ghost",
+            &context,
+            &GuestRequest::new(serde_json::Value::Null),
+        );
+        // No counter is created for a guest that was never registered.
+        assert!(rt.metrics_snapshot().iter().all(|m| m.name != "ghost"));
+    }
+
+    #[test]
+    fn scheduler_path_invocations_are_counted() {
+        // The Scheduler dispatches through `invoke_with_deadline` too, so its
+        // (trigger/event) invocations land in the same per-guest counters — the
+        // pressure signal is not blind to background work (#63).
+        use crate::Scheduler;
+        use std::time::Duration;
+
+        let rt = Arc::new(runtime_with_echo());
+        let scheduler = Scheduler::new(rt.clone());
+        let context = ctx("analyst@kanbrick.com", kanbrick_core::ClearanceLevel::L3);
+        let id = scheduler.schedule(
+            "echo",
+            &context,
+            &GuestRequest::new(serde_json::json!({"via": "scheduler"})),
+            None,
+        );
+        let status = scheduler
+            .wait(id, Duration::from_secs(5))
+            .expect("task reaches a terminal state");
+        assert!(status.is_terminal());
+        let snap = rt.metrics_snapshot();
+        let echo = metric_for(&snap, "echo");
+        assert_eq!(echo.completed, 1, "scheduler-driven call was counted");
     }
 }

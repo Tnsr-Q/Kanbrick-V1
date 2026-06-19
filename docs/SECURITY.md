@@ -93,3 +93,10 @@ filesystem.
   deployment.
 - **Transport.** The API speaks plain HTTP; terminate TLS at a reverse proxy (or
   add TLS) before exposing it.
+- **Metrics exposure (#63).** `GET /metrics` is **unauthenticated** so Prometheus
+  can scrape it, and it carries no identities, tokens, or business data — only
+  per-guest invocation counters and `kanbrick_mesh_pressure_ratio`. It does,
+  however, expose the **guest catalogue** through the `guest="…"` label (e.g.
+  `valuation`, `compliance`). Treat it as an **in-cluster scrape surface only**:
+  bind it to the internal `Service`/`ServiceMonitor` and never route `/metrics`
+  through the public ingress.

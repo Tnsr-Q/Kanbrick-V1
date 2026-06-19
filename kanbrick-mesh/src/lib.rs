@@ -20,6 +20,7 @@
 //!   log (#27).
 //! * [`RuntimeLimits`] — per-guest sandbox limits (memory, fuel, timeout).
 //! * [`GuestInfo`] — a registered guest's name + version.
+//! * [`GuestMetric`] — a snapshot of one guest's invocation counters (#63).
 //! * [`MeshError`] — the runtime error surface.
 //!
 //! The host↔guest calling convention (ADR-0002): guests export `memory`,
@@ -38,5 +39,5 @@ pub mod scheduler;
 pub use error::{MeshError, Result};
 pub use event::{EventBus, SubscriptionId};
 pub use host::MeshHost;
-pub use runtime::{GuestInfo, MeshRuntime, RuntimeLimits};
+pub use runtime::{GuestInfo, GuestMetric, MeshRuntime, RuntimeLimits};
 pub use scheduler::{RetryPolicy, Scheduler, SchedulerConfig, TaskId, TaskStatus, TriggerHandle};

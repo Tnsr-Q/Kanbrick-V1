@@ -4,7 +4,7 @@
 
 use chrono::Duration;
 use clap::Parser;
-use kanbrick_api::{router, AppState};
+use kanbrick_api::{router, AdmissionConfig, AppState};
 use kanbrick_auth::JwtAuthenticator;
 use kanbrick_store::Store;
 
@@ -21,10 +21,34 @@ struct Cli {
     /// Session TTL in hours.
     #[arg(long, default_value_t = 8)]
     ttl_hours: i64,
+    /// Max guest invocations running concurrently, per guest (#63). Overrides
+    /// `KANBRICK_GUEST_CONCURRENCY`; both default to 4.
+    #[arg(long)]
+    guest_concurrency: Option<usize>,
 }
 
 /// Dev-only fallback signing secret used when `KANBRICK_JWT_SECRET` is unset.
 const DEV_SECRET: &str = "kanbrick-v1-insecure-dev-secret-set-KANBRICK_JWT_SECRET";
+
+/// Default per-guest concurrency, matching the mesh `Scheduler` (#63).
+const DEFAULT_GUEST_CONCURRENCY: usize = 4;
+/// Default per-guest queue depth before overload (`429`) sheds load (#63).
+const DEFAULT_GUEST_QUEUE_LIMIT: usize = 32;
+
+/// Resolve a `usize` setting from an environment variable, warning (and falling
+/// back) if it is set but unparseable.
+fn env_usize(key: &str) -> Option<usize> {
+    match std::env::var(key) {
+        Ok(raw) => match raw.parse::<usize>() {
+            Ok(v) => Some(v),
+            Err(_) => {
+                tracing::warn!("{key}={raw:?} is not a valid integer — ignoring");
+                None
+            }
+        },
+        Err(_) => None,
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -41,9 +65,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         DEV_SECRET.to_string()
     });
 
+    // Precedence: CLI flag > env var > default (#63).
+    let guest_concurrency = cli
+        .guest_concurrency
+        .or_else(|| env_usize("KANBRICK_GUEST_CONCURRENCY"))
+        .unwrap_or(DEFAULT_GUEST_CONCURRENCY);
+    let queue_limit = env_usize("KANBRICK_GUEST_QUEUE_LIMIT").unwrap_or(DEFAULT_GUEST_QUEUE_LIMIT);
+    let admission = AdmissionConfig {
+        guest_concurrency,
+        queue_limit,
+    };
+
     let store = Store::open(&cli.db)?;
     let jwt = JwtAuthenticator::new(secret.as_bytes(), Duration::hours(cli.ttl_hours));
-    let app = router(AppState::new(store, jwt)?);
+    let app = router(AppState::with_config(store, jwt, admission)?);
 
     let addr = format!("0.0.0.0:{}", cli.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

@@ -8,6 +8,8 @@
 //! * `GET  /me` — returns the caller's identity; requires a valid JWT.
 //! * `GET  /admin` — a clearance-gated route requiring L4+ (issue #16).
 //! * `GET  /health` — liveness + embedded-guest count (#51).
+//! * `GET  /metrics` — unauthenticated Prometheus mesh-pressure metrics (#63);
+//!   in-cluster scrape surface only.
 //! * `POST /guests/{name}` — authenticate, gate by clearance, **audit**, and
 //!   invoke a WASM guest under the caller's host-authoritative `FirmContext`,
 //!   returning its response (#47).
@@ -37,6 +39,11 @@ use kanbrick_store::Store;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+mod admission;
+mod metrics;
+
+pub use admission::{AdmissionConfig, GuestAdmission};
+
 /// The three business guests, embedded at build time (build.rs → `include_bytes!`).
 const VALUATION_WASM: &[u8] = include_bytes!(env!("KANBRICK_VALUATION_GUEST_WASM"));
 const REPORTING_WASM: &[u8] = include_bytes!(env!("KANBRICK_REPORTING_GUEST_WASM"));
@@ -54,18 +61,34 @@ pub struct AppState {
     pub jwt: Arc<JwtAuthenticator>,
     /// The WASM mesh, pre-loaded with the embedded guests and bound to the store.
     pub mesh: Arc<MeshRuntime>,
+    /// Per-guest admission control for the synchronous invocation path (#63).
+    pub admission: Arc<GuestAdmission>,
 }
 
 impl AppState {
     /// Build state from a store and JWT authenticator, loading the embedded
-    /// guests into a store-bound mesh runtime.
+    /// guests into a store-bound mesh runtime, with default admission limits.
     pub fn new(store: Store, jwt: JwtAuthenticator) -> Result<Self, MeshError> {
+        Self::with_config(store, jwt, AdmissionConfig::default())
+    }
+
+    /// Like [`new`](Self::new) but with explicit per-guest admission limits (#63).
+    pub fn with_config(
+        store: Store,
+        jwt: JwtAuthenticator,
+        admission: AdmissionConfig,
+    ) -> Result<Self, MeshError> {
         let store = Arc::new(store);
         let mesh = Arc::new(build_mesh(store.clone())?);
+        let admission = Arc::new(GuestAdmission::new(
+            mesh.guests().into_iter().map(|g| g.name),
+            admission,
+        ));
         Ok(AppState {
             store,
             jwt: Arc::new(jwt),
             mesh,
+            admission,
         })
     }
 }
@@ -102,6 +125,7 @@ pub fn router(state: AppState) -> Router {
         .route("/me", get(me))
         .route("/admin", get(admin))
         .route("/health", get(health))
+        .route("/metrics", get(metrics_handler))
         .route("/guests/{name}", post(invoke_guest))
         .with_state(state)
 }
@@ -278,12 +302,26 @@ async fn health(State(state): State<AppState>) -> Json<JsonValue> {
     }))
 }
 
+/// `GET /metrics` — unauthenticated Prometheus exposition of mesh pressure (#63).
+///
+/// Emits per-guest invocation gauges/counters and `kanbrick_mesh_pressure_ratio`
+/// for the KEDA scaler. The `guest="…"` labels reveal the guest catalogue, so this
+/// is an **in-cluster scrape surface only** and must not be routed through the
+/// public ingress — see `docs/SECURITY.md`.
+async fn metrics_handler(State(state): State<AppState>) -> Response {
+    let body =
+        metrics::render_prometheus(&state.mesh.metrics_snapshot(), &state.admission.snapshot());
+    ([(header::CONTENT_TYPE, metrics::CONTENT_TYPE)], body).into_response()
+}
+
 /// `POST /guests/{name}` — the canonical guest-invocation surface.
 ///
-/// Pipeline: **JWT → FirmContext → clearance gate → audit → guest**. The caller's
-/// identity is host-authoritative (from the validated token, propagated by the
-/// mesh); nothing in the request body can set or forge it. WASM execution runs on
-/// a blocking thread so it never stalls the async runtime (matters under load).
+/// Pipeline: **JWT → FirmContext → clearance gate → admission → audit → guest**.
+/// The caller's identity is host-authoritative (from the validated token,
+/// propagated by the mesh); nothing in the request body can set or forge it. WASM
+/// execution runs on a blocking thread so it never stalls the async runtime, and
+/// per-guest admission control sheds load past the queue limit (`429`) under
+/// pressure (#63).
 async fn invoke_guest(
     State(state): State<AppState>,
     AuthedContext(ctx): AuthedContext,
@@ -299,6 +337,17 @@ async fn invoke_guest(
         )
     })?;
     require_clearance(&ctx, min)?;
+
+    // Admission control (#63): bound per-guest concurrency and shed load past the
+    // queue limit, so a burst returns 429 instead of exhausting the blocking pool.
+    // The permit is held for the whole invocation (dropped at end of scope).
+    let _permit = state.admission.admit(&name).await.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "overloaded",
+            format!("guest {name} is at capacity; retry later"),
+        )
+    })?;
 
     // Audit the invocation itself (every guest query is additionally audited by
     // the GuardedStore the mesh routes through).
