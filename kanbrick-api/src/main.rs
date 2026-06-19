@@ -2,9 +2,11 @@
 //!
 //! Boots the embedded store and serves the HTTP API (issues #15, #16).
 
+use std::path::PathBuf;
+
 use chrono::Duration;
 use clap::Parser;
-use kanbrick_api::{router, AdmissionConfig, AppState};
+use kanbrick_api::{router, AdmissionConfig, ApiConfig, AppState, DEFAULT_ASSET_DIR};
 use kanbrick_auth::JwtAuthenticator;
 use kanbrick_store::Store;
 
@@ -25,6 +27,10 @@ struct Cli {
     /// `KANBRICK_GUEST_CONCURRENCY`; both default to 4.
     #[arg(long)]
     guest_concurrency: Option<usize>,
+    /// Root of the content-addressed guest asset volume (#64). Overrides
+    /// `KANBRICK_ASSET_DIR`; both default to `/var/lib/kanbrick/assets`.
+    #[arg(long)]
+    asset_dir: Option<PathBuf>,
 }
 
 /// Dev-only fallback signing secret used when `KANBRICK_JWT_SECRET` is unset.
@@ -71,14 +77,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .or_else(|| env_usize("KANBRICK_GUEST_CONCURRENCY"))
         .unwrap_or(DEFAULT_GUEST_CONCURRENCY);
     let queue_limit = env_usize("KANBRICK_GUEST_QUEUE_LIMIT").unwrap_or(DEFAULT_GUEST_QUEUE_LIMIT);
-    let admission = AdmissionConfig {
-        guest_concurrency,
-        queue_limit,
+    let asset_dir = cli
+        .asset_dir
+        .or_else(|| std::env::var_os("KANBRICK_ASSET_DIR").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_ASSET_DIR));
+    let config = ApiConfig {
+        admission: AdmissionConfig {
+            guest_concurrency,
+            queue_limit,
+        },
+        asset_dir,
     };
 
     let store = Store::open(&cli.db)?;
     let jwt = JwtAuthenticator::new(secret.as_bytes(), Duration::hours(cli.ttl_hours));
-    let app = router(AppState::with_config(store, jwt, admission)?);
+    let app = router(AppState::with_config(store, jwt, config)?);
 
     let addr = format!("0.0.0.0:{}", cli.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

@@ -21,6 +21,7 @@
 //! * [`RuntimeLimits`] — per-guest sandbox limits (memory, fuel, timeout).
 //! * [`GuestInfo`] — a registered guest's name + version.
 //! * [`GuestMetric`] — a snapshot of one guest's invocation counters (#63).
+//! * [`AssetStore`] — content-addressed, air-gapped guest artifact store (#64).
 //! * [`MeshError`] — the runtime error surface.
 //!
 //! The host↔guest calling convention (ADR-0002): guests export `memory`,
@@ -30,12 +31,14 @@
 //!
 //! [`docs/adr/0002-phase-3-wasm-runtime.md`]: https://github.com/Tnsr-Q/Kanbrick-V1/blob/main/docs/adr/0002-phase-3-wasm-runtime.md
 
+pub mod assets;
 pub mod error;
 pub mod event;
 pub mod host;
 pub mod runtime;
 pub mod scheduler;
 
+pub use assets::{AssetError, AssetRef, AssetStore};
 pub use error::{MeshError, Result};
 pub use event::{EventBus, SubscriptionId};
 pub use host::MeshHost;

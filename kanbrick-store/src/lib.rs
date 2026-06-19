@@ -13,13 +13,19 @@
 //! * [`value::Params`] — injection-safe bound query parameters (issue #9).
 //! * [`migrations::Migrator`] — versioned schema & seed migrations (issue #10).
 //! * [`seed`] — Cypher seed-file loading (issue #11).
+//! * [`guest_policy`] — persisted per-guest version/clearance/asset policy (#64).
 
+pub mod guest_policy;
 pub mod migrations;
 pub mod schema;
 pub mod seed;
 pub mod store;
 pub mod value;
 
+pub use guest_policy::{
+    list_guest_policies, read_guest_policy, write_guest_policy, GuestPolicy, SOURCE_EMBEDDED,
+    SOURCE_REGISTRY,
+};
 pub use migrations::{Migration, MigrationOutcome, Migrator};
 pub use schema::{CompanyNode, PersonNode, SegmentNode};
 pub use store::Store;

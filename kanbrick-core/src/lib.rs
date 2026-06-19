@@ -21,7 +21,7 @@ pub mod ids;
 pub mod schema;
 pub mod status;
 
-pub use clearance::ClearanceLevel;
+pub use clearance::{ClearanceLevel, ParseClearanceError};
 pub use context::FirmContext;
 pub use error::{Error, ErrorKind, Result};
 pub use ids::{CompanyId, PersonId, SegmentCode};

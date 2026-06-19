@@ -69,6 +69,30 @@ limits (ADR-0002): 64 MiB max linear memory, a fuel budget, and a wall-clock
 timeout (epoch interruption). A guest cannot reach host memory or the host
 filesystem.
 
+## Guest registry (#64)
+
+Guests can be added or replaced at runtime from a content-addressed, air-gapped
+asset store (`tachyon://sha256:<hex>`). This is a privileged trust surface, so it
+is constrained on three axes:
+
+- **L5 only.** Both `POST /admin/assets/guests` (upload) and
+  `POST /admin/guests/{name}/activate` (bind + hot-reload) require admin (L5)
+  clearance. Lower tiers get a `403`.
+- **Integrity.** Artifacts are addressed by SHA-256 and the digest is verified on
+  write *and* re-verified on every read, so a corrupted or swapped file is caught
+  before it is ever compiled. Activation is compile-first and atomic: if the
+  artifact fails to compile, the previously-active guest keeps serving and **no**
+  policy is written.
+- **Clearance floor.** A registry activation may *raise* a guest's minimum
+  clearance but never set it below the embedded baseline (e.g. `compliance` can
+  never drop below L4). New guest names must specify a minimum clearance.
+
+Every upload and activation is recorded through the same `AuditLog` as guest
+queries. The policy that binds a name to a version/clearance/asset URI is stored
+in SparrowDB (the source of truth) and replayed at boot; the asset *bytes* live
+on the asset volume, which must be on durable, single-pod storage (see
+`deploy/k8s/scale-out-prerequisites.md`).
+
 ## Threat model & test coverage
 
 | Vector | Mitigation | Tested by |
@@ -80,6 +104,8 @@ filesystem.
 | Data leakage across tiers | `ClearanceScope` + fail-closed `retain_rows` | `scope`/`guarded`/discovery tests |
 | Guest sandbox escape | WASIp1 lockdown + resource limits | `mesh/tests/resource_limits.rs` |
 | Audit completeness | every guarded query audited | `guarded`, `data_integrity` tests |
+| Malicious/forged guest artifact | L5-only registry, SHA-256 verify on write+read, compile-first atomic swap | `kanbrick-api/tests/registry.rs` |
+| Clearance downgrade via activation | embedded clearance floor enforced | `registry.rs` |
 
 ## Known limitations (for the security review — #48 is HITL)
 
