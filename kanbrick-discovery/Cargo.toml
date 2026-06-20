@@ -14,6 +14,9 @@ kanbrick-auth.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Project-scope grant lifecycle (#57): persisted requests/grants/skills.
+chrono.workspace = true
+uuid.workspace = true
 
 # Discovery engine (Phase 4) — see ADR-0003. graphify-rs 0.8 is a CLI binary;
 # its reusable library lives in these sub-crates.
@@ -21,7 +24,17 @@ graphify-core.workspace = true
 graphify-analyze.workspace = true
 graphify-cluster.workspace = true
 graphify-export.workspace = true
+# Code-graph ingest (#38, ADR-0003 §6): tree-sitter AST extraction → KnowledgeGraph.
+# Optional + behind the `codegraph` feature — they pull a tree-sitter / reqwest
+# dependency tree, so the always-on discovery surface (and the deployed API that
+# links it) stays lean and network-free unless the feature is explicitly enabled.
+graphify-build = { workspace = true, optional = true }
+graphify-extract = { workspace = true, optional = true }
+
+[features]
+# Code-graph ingest pipeline (#38). Off by default; enabled in CI via
+# `--all-features` and by the CLI's `code-ingest` command.
+codegraph = ["dep:graphify-build", "dep:graphify-extract"]
 
 [dev-dependencies]
 tempfile = "3"
-uuid.workspace = true

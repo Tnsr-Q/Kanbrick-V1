@@ -84,26 +84,36 @@ asked; **never put the model identifier in committed artifacts**.
 ## 4. Remaining work (prioritized)
 
 ### Genuinely outstanding
-1. **#57 — per-project scopes + customizable per-project agents/skills** (operator
-   request, HITL). The **enforcement primitive already exists**:
-   `kanbrick_discovery::ProjectScope` (additive, composable `VisibilityScope`).
-   What's left is the *lifecycle*: a request → approval → grant workflow,
-   persistence (likely `(:ScopeRequest)`/`(:ProjectScope)`/`(:Skill)` nodes in
-   SparrowDB), eligible-grantor rules (clearance threshold and/or
-   `common_manager`), and binding per-project skills/agents to a granted scope.
-   See issue #57's "Open design questions" — bring them to the operator.
-2. **#38 — code-graph ingest** (deferred in Phase 4, HITL: **non-LLM/AST** chosen,
-   ADR-0003 §6). Use `graphify-extract` (`collect_files`/`extract`) →
-   `graphify-build::build_from_extraction` → `graphify-export::export_cypher`, then
-   ingest into the same SparrowDB with code-ontology labels
-   (Function/Module/Document + CALLS/IMPORTS/DEFINED_IN/REFERENCES). Those crates
-   are **already declared** in `[workspace.dependencies]`; no manifest change.
-   Watch: re-ingest must not duplicate nodes (use `MERGE`/inline, per ADR-0001).
-3. **#53 — finish deployment artifacts** (env-gated, see §6). The self-contained
-   binary is **done** (23 MB, embeds all guests, smoke-tested). Remaining: build +
-   smoke the **Docker image** (`scripts/docker-release.sh`, needs a running Docker
-   daemon) and the **fully-static musl** binary (needs `musl-tools`/`musl-gcc` +
-   `rustup target add x86_64-unknown-linux-musl`).
+1. **#57 — per-project scopes + customizable per-project agents/skills.** **Core
+   DONE** (ADR-0007, operator answered the four design questions). The lifecycle
+   lives in `kanbrick_discovery::grants::ScopeGrants`: request → **dual-gate**
+   approve/deny (clearance ≥ L4 **and** in the requester's management chain, or L5
+   override) → persisted `(:ScopeRequest)`/`(:ProjectScope)`/`(:Skill)` in
+   SparrowDB → additive enforcement via `active_scope_for` composing a
+   `ProjectScope` → `authorize_skill` (grantee + clearance gate, returns the
+   composed scope; **identity stays host-authoritative — never injected**) →
+   `revoke`/`expire_due` with request cascade + discovery-cache invalidation. The
+   whole chain is audited. **Remaining (flagged, additive):** (a) HTTP endpoints
+   on `kanbrick-api`; (b) wire the composed scope from `authorize_skill` into the
+   mesh guest `query_graph` path; (c) schedule `expire_due` via `Scheduler`. No
+   `granted_segments` yet (expand a segment grant to its companies/persons).
+2. ~~**#38 — code-graph ingest**~~ **DONE** (ADR-0006). `kanbrick_discovery::
+   codegraph` runs `graphify-extract` → `graphify-build::build_from_extraction`,
+   offers `export_cypher` as the inspectable artifact, and ingests into the same
+   SparrowDB under the Function/Module/Document + CALLS/IMPORTS/DEFINED_IN/
+   REFERENCES ontology with **idempotent** node `MERGE` + inline relationship
+   `MERGE` (re-ingest does not duplicate). Behind the non-default `codegraph`
+   feature so the deployed API stays network-free (CI runs it via
+   `--all-features`); operate it with `kanbrick-cli code-ingest --root <dir>`
+   built with `--features codegraph`. The struct/trait/enum→`Function` fold is a
+   flagged, revisitable schema choice (ADR-0006 §2).
+3. **#53 — finish deployment artifacts.** The self-contained binary is **done**
+   (23 MB, embeds all guests, smoke-tested). The **fully-static musl** binary is
+   now also **done** — `scripts/build-static.sh` builds it for
+   `x86_64-unknown-linux-musl`, verifies it is statically linked + < 100 MB, and
+   smoke-tests it (23 MB, static-pie, login + reporting guest → 9 companies).
+   **Remaining:** build + smoke the **Docker image** (`scripts/docker-release.sh`)
+   — still needs a running Docker daemon (not available in this sandbox; see §6).
 
 ### Hardening / optimization backlog (no open issue yet — file if pursued)
 - **Cold-start / test speed:** precompile guests with `wasmtime` serialized
@@ -126,12 +136,15 @@ asked; **never put the model identifier in committed artifacts**.
 The auto-close keyword gotcha (§1) means **#6–#52 are implemented and merged but
 still show OPEN**, and #53 is partially done. The real state:
 
-- **Implemented & merged — should be CLOSED:** #6–#37 **except #38**, and #39–#52.
-  (Phases 1–6: store, auth, mesh, discovery, guests, testing/validation.) Close
-  each with a note pointing at the merge (Phase PRs #55/#56/#58/#59/#60).
-- **#53 — keep open**, scoped down to "Docker image build/smoke + musl static"
-  (the binary half is done).
-- **#38, #57 — keep open** (genuinely outstanding, above).
+- **Implemented & merged — should be CLOSED:** #6–#52 (Phases 1–6: store, auth,
+  mesh, discovery, guests, testing/validation). Close each with a note pointing
+  at the merge (Phase PRs #55/#56/#58/#59/#60).
+- **#38 — now DONE** (ADR-0006, `codegraph` module); close it pointing at the
+  follow-up merge.
+- **#53 — keep open**, now scoped down to **just "Docker image build/smoke"**
+  (the self-contained binary *and* the musl static binary are done).
+- **#57 — core DONE** (ADR-0007); keep open only for the flagged additive wiring
+  (HTTP endpoints, composed-scope-into-mesh, scheduled expiry).
 
 Before closing in bulk, spot-check a couple against the code so nothing is closed
 prematurely. Future PRs: use `closes #N` **once per issue**.
@@ -140,15 +153,16 @@ prematurely. Future PRs: use `closes #N` **once per issue**.
 
 Nearly all remaining *development* (#57, #38, the backlog) works in the **remote
 sandbox** — `cargo build`/`test`/`clippy`, the wasm target, and SparrowDB all
-function here. Two things do **not** work in this sandbox and need a local machine
-or a CI runner:
+function here. Only **one** thing still needs a machine with a Docker daemon:
 
 - **Docker image (#53):** the `docker` CLI is present but **the daemon is not
   running**, so `docker build` fails here. Run `scripts/docker-release.sh` where a
   Docker daemon is available.
-- **Static musl binary (#53):** `musl-gcc`/`musl-tools` and the
-  `x86_64-unknown-linux-musl` target are not installed here (and C deps like
-  `ring`/SparrowDB need musl-gcc). Install them on a Linux host/CI and build there.
+- **Static musl binary (#53): now buildable in-sandbox.** This environment has
+  `apt` (`apt-get install -y musl-tools` works) and `rustup target add
+  x86_64-unknown-linux-musl` succeeds, so `scripts/build-static.sh` produces and
+  smoke-tests the static binary here (it did — 23 MB, static-pie). The earlier
+  "not installed" note no longer holds for this sandbox.
 
 You do **not** need to clone locally just to direct the next agent — it can do the
 code work remotely. Clone locally (or use a CI runner) only to **build/verify the

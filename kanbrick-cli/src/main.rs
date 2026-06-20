@@ -47,6 +47,25 @@ enum Command {
         #[arg(long, default_value = "graph/firm.db")]
         db: String,
     },
+
+    /// Extract a code graph from a source tree and ingest it into the graph (#38).
+    ///
+    /// Runs graphify's non-LLM (AST) extraction over `--root`, then MERGEs the
+    /// code ontology (Function/Module/Document + CALLS/IMPORTS/DEFINED_IN/
+    /// REFERENCES) into the same SparrowDB that holds the firm data. Idempotent:
+    /// re-running over the same tree does not duplicate nodes.
+    #[cfg(feature = "codegraph")]
+    CodeIngest {
+        /// Root of the source tree to ingest.
+        #[arg(long, default_value = ".")]
+        root: String,
+        /// Path to the graph database directory.
+        #[arg(long, default_value = "graph/firm.db")]
+        db: String,
+        /// Optional directory to also write graphify's Cypher export to.
+        #[arg(long)]
+        export: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -58,6 +77,8 @@ fn main() -> ExitCode {
             password,
             db,
         } => run_set_password(&email, &password, &db),
+        #[cfg(feature = "codegraph")]
+        Command::CodeIngest { root, db, export } => run_code_ingest(&root, &db, export.as_deref()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -77,6 +98,29 @@ fn run_set_password(email: &str, password: &str, db: &str) -> kanbrick_core::Res
     LoginService::new(&store, &jwt).set_password(email, password)?;
     store.checkpoint()?;
     println!("set password for {email}");
+    Ok(())
+}
+
+/// Extract a code graph from `root` and ingest it into the database at `db`.
+#[cfg(feature = "codegraph")]
+fn run_code_ingest(root: &str, db: &str, export: Option<&str>) -> kanbrick_core::Result<()> {
+    use kanbrick_discovery::codegraph;
+
+    let store = Store::open(db)?;
+    println!("extracting + ingesting code graph from {root}");
+    let stats = codegraph::ingest_from_source(
+        &store,
+        std::path::Path::new(root),
+        export.map(std::path::Path::new),
+    )?;
+    store.checkpoint()?;
+    println!(
+        "ingested code graph: {} functions, {} modules, {} documents, {} edges",
+        stats.functions, stats.modules, stats.documents, stats.edges
+    );
+    if let Some(dir) = export {
+        println!("wrote Cypher export to {dir}/graph.cypher");
+    }
     Ok(())
 }
 
