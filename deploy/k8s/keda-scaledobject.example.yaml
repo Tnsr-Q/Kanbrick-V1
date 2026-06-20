@@ -1,0 +1,41 @@
+# ⚠️ INERT EXAMPLE — NOT APPLIED BY DEFAULT (#65, Track B).
+#
+# This ScaledObject is pinned to a single replica (minReplicaCount ==
+# maxReplicaCount == 1) and is provided ONLY as a template for when horizontal
+# scale-out is unblocked. Scaling the API past one pod is NOT yet safe: the
+# embedded SparrowDB graph and the asset volume are single-writer. Read
+# scale-out-prerequisites.md before changing anything here.
+#
+# To use it once the prerequisites are met:
+#   1. resolve the single-writer blocker (shared graph store, or API/worker split);
+#   2. rename this file to drop the `.example` suffix;
+#   3. raise `maxReplicaCount`;
+#   4. point `serverAddress` at your Prometheus;
+#   5. `kubectl apply -f keda-scaledobject.yaml`.
+#
+# Requires the KEDA CRDs (keda.sh). As a CRD it cannot be validated by
+# `kubectl apply --dry-run=client`; use `--dry-run=server` on a cluster with KEDA,
+# or kubeconform with the KEDA schema.
+#
+# The scale signal is `kanbrick_mesh_pressure_ratio` from /metrics (#63). There is
+# deliberately NO GPU/DCGM trigger — Kanbrick guests run CPU-only in wasmtime.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: kanbrick-api
+  labels:
+    app.kubernetes.io/name: kanbrick-api
+spec:
+  scaleTargetRef:
+    name: kanbrick-api
+  minReplicaCount: 1
+  maxReplicaCount: 1 # ← guardrail: keep at 1 until scale-out is unblocked
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-operated.monitoring.svc:9090
+        metricName: kanbrick_mesh_pressure_ratio
+        # Mesh pressure across the fleet; scale when sustained above threshold.
+        query: max(kanbrick_mesh_pressure_ratio)
+        threshold: "0.7"
+        activationThreshold: "0.1"

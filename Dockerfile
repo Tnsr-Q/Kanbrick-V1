@@ -22,7 +22,11 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-RUN useradd --system --create-home --home-dir /var/lib/kanbrick kanbrick
+# Pin a fixed non-root uid/gid (10001) so the Kubernetes securityContext
+# (runAsUser/runAsGroup/fsGroup in deploy/k8s) can match it and the mounted PVC
+# is writable. See deploy/k8s/kanbrick-api.yaml.
+RUN groupadd --system --gid 10001 kanbrick \
+    && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /var/lib/kanbrick kanbrick
 
 COPY --from=builder /build/target/release/kanbrick-api /usr/local/bin/kanbrick-api
 COPY --from=builder /build/target/release/kanbrick-cli /usr/local/bin/kanbrick-cli

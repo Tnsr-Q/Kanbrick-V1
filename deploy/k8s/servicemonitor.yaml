@@ -1,0 +1,27 @@
+# Prometheus Operator ServiceMonitor for the Kanbrick-V1 API (#65, Track B).
+#
+# Scrapes the *in-cluster* Service on /metrics, keeping the guest-catalogue labels
+# and pressure metrics on the internal network. NEVER expose /metrics through a
+# public ingress (see docs/SECURITY.md).
+#
+# Requires the Prometheus Operator CRDs (monitoring.coreos.com). Being a CRD, this
+# cannot be validated by `kubectl apply --dry-run=client`; validate it with
+# kubeconform (schema-aware, CRDs skipped) or `--dry-run=server` against a cluster
+# that has the operator installed.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kanbrick-api
+  labels:
+    app.kubernetes.io/name: kanbrick-api
+    # Must match your Prometheus's `serviceMonitorSelector` (kube-prometheus-stack
+    # defaults to `release: <helm-release>`). Adjust to your install.
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kanbrick-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
