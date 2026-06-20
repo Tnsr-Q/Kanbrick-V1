@@ -1,0 +1,135 @@
+# Kanbrick-V1 API — production-safe, single-pod deployment (#65, Track B).
+#
+# Bundles the PersistentVolumeClaim, Deployment, and Service. The Prometheus
+# ServiceMonitor and the KEDA ScaledObject are CRDs, so they live in separate
+# files (servicemonitor.yaml, keda-scaledobject.example.yaml) — this file is pure
+# core API resources and validates with `kubectl apply --dry-run=client`.
+#
+# ⚠️ SINGLE REPLICA ONLY. The embedded SparrowDB graph and the content-addressed
+# asset volume are single-writer and not safe to share across pods. Do not raise
+# `replicas` (or the KEDA maxReplicaCount) until the blockers in
+# scale-out-prerequisites.md are resolved.
+#
+# Prerequisites:
+#   * A built image (see ../../Dockerfile and scripts/docker-release.sh).
+#   * A Secret `kanbrick-secrets` with key `jwt-secret`:
+#       kubectl create secret generic kanbrick-secrets \
+#         --from-literal=jwt-secret="$(openssl rand -hex 32)"
+#   * One-time seed (the image bundles the seed data + CLI):
+#       kubectl exec deploy/kanbrick-api -- kanbrick-cli seed \
+#         --file /opt/kanbrick/seed/kanbrick_seed_data.cypher \
+#         --db /var/lib/kanbrick/firm.db
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kanbrick-data
+  labels:
+    app.kubernetes.io/name: kanbrick-api
+spec:
+  # ReadWriteOnce matches the single-writer model: the graph DB (firm.db) and the
+  # asset registry (assets/) both live on this one volume, owned by one pod.
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kanbrick-api
+  labels:
+    app.kubernetes.io/name: kanbrick-api
+spec:
+  replicas: 1 # do not raise — see scale-out-prerequisites.md
+  strategy:
+    # The RWO volume cannot be attached to two pods at once, so never run old and
+    # new pods simultaneously during a rollout.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kanbrick-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kanbrick-api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001 # matches the `kanbrick` user pinned in the Dockerfile
+        runAsGroup: 10001
+        fsGroup: 10001 # chowns the PVC so the non-root user can write to it
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kanbrick-api
+          # Replace with your published image (built via ../../Dockerfile).
+          image: ghcr.io/tnsr-q/kanbrick-v1:latest
+          args:
+            - "--port=8080"
+            - "--db=/var/lib/kanbrick/firm.db"
+            - "--asset-dir=/var/lib/kanbrick/assets"
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: KANBRICK_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: kanbrick-secrets
+                  key: jwt-secret
+            - name: RUST_LOG
+              value: "info"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true # only the PVC mount and /tmp are writable
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/kanbrick
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: kanbrick-data
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kanbrick-api
+  labels:
+    app.kubernetes.io/name: kanbrick-api
+spec:
+  # ClusterIP: in-cluster only. `/metrics` is unauthenticated and exposes the
+  # guest catalogue (see docs/SECURITY.md) — never route it through a public
+  # ingress. Expose only the application paths externally, if any.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kanbrick-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

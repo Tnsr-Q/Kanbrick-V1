@@ -1,0 +1,41 @@
+name: K8s manifests
+
+# Validate the deploy manifests when they (or the validator) change. Kept off the
+# main Rust CI so manifest edits don't trigger the full build, and vice versa.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/k8s/**"
+      - "scripts/validate-k8s.sh"
+      - ".github/workflows/k8s.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "deploy/k8s/**"
+      - "scripts/validate-k8s.sh"
+      - ".github/workflows/k8s.yml"
+
+jobs:
+  validate:
+    name: Validate Kubernetes manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install kubeconform
+        run: |
+          version=v0.6.7
+          curl -sSLf \
+            "https://github.com/yannh/kubeconform/releases/download/${version}/kubeconform-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Validate manifests
+        # Schema-validates the core kinds (Deployment/Service/PVC) and skips the
+        # CRD resources (ServiceMonitor/ScaledObject) via -ignore-missing-schemas.
+        # Server-side validation of CRDs requires a live cluster and is out of CI.
+        run: scripts/validate-k8s.sh
