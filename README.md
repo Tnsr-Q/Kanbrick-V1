@@ -59,7 +59,10 @@ The whole clone-to-running-system path is validated by
 | `GET /me` | JWT | the caller's identity |
 | `GET /admin` | JWT, L4+ | a clearance-gated example route |
 | `GET /health` | — | liveness + embedded-guest count |
+| `GET /metrics` | — | prometheus metrics |
 | `POST /guests/{name}` | JWT | invoke a guest (`valuation` L3+, `compliance` L4+, `reporting` any) |
+| `POST /admin/assets/guests` | JWT, L5 | upload a WASM artifact |
+| `POST /admin/guests/{name}/activate` | JWT, L5 | switch guest to content-addressed artifact |
 
 ## Develop
 
