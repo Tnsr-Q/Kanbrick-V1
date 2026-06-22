@@ -22,6 +22,9 @@
 //! * [`GuestInfo`] — a registered guest's name + version.
 //! * [`GuestMetric`] — a snapshot of one guest's invocation counters (#63).
 //! * [`AssetStore`] — content-addressed, air-gapped guest artifact store (#64).
+//! * [`HostServices`] — the backend the `kbk_query_graph`/`kbk_emit_event`
+//!   imports route through; [`LocalHostServices`] is the in-process graph+bus
+//!   binding (#68, the seam for the control-plane/executor split).
 //! * [`MeshError`] — the runtime error surface.
 //!
 //! The host↔guest calling convention (ADR-0002): guests export `memory`,
@@ -37,6 +40,7 @@ pub mod event;
 pub mod host;
 pub mod runtime;
 pub mod scheduler;
+pub mod services;
 
 pub use assets::{AssetError, AssetRef, AssetStore};
 pub use error::{MeshError, Result};
@@ -44,3 +48,4 @@ pub use event::{EventBus, SubscriptionId};
 pub use host::MeshHost;
 pub use runtime::{GuestInfo, GuestMetric, MeshRuntime, RuntimeLimits};
 pub use scheduler::{RetryPolicy, Scheduler, SchedulerConfig, TaskId, TaskStatus, TriggerHandle};
+pub use services::{HostServices, HostServicesError, LocalHostServices};

@@ -17,8 +17,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use kanbrick_auth::GuardedStore;
-use kanbrick_core::abi::{Event, GraphQuery, GraphRows, GuestRequest, GuestResponse};
+use kanbrick_core::abi::{Event, GraphQuery, GuestRequest, GuestResponse};
 use kanbrick_core::FirmContext;
 use kanbrick_store::Store as GraphStore;
 use wasmtime::{
@@ -30,31 +29,11 @@ use wasmtime_wasi::WasiCtxBuilder;
 
 use crate::error::{MeshError, Result};
 use crate::event::EventBus;
+use crate::services::{HostServices, LocalHostServices};
 
 /// The import module name the host functions are published under; guests declare
 /// `#[link(wasm_import_module = "kanbrick")]` to use them.
 const HOST_MODULE: &str = "kanbrick";
-
-/// What the `kbk_query_graph` import needs to service a guest query: the firm
-/// graph plus the caller's host-authoritative context, routed through the
-/// clearance-enforcing [`GuardedStore`] (#24).
-struct QueryBackend {
-    store: Arc<GraphStore>,
-    ctx: FirmContext,
-}
-
-impl QueryBackend {
-    /// Run `query` under the caller's clearance, returning JSON-encoded
-    /// [`GraphRows`]. Errors surface as a guest trap.
-    fn run(&self, query: &GraphQuery) -> wasmtime::Result<Vec<u8>> {
-        let guarded = GuardedStore::new(&self.store, &self.ctx)
-            .map_err(|e| wasmtime::Error::msg(e.to_string()))?;
-        let rows: GraphRows = guarded
-            .query_graph(query)
-            .map_err(|e| wasmtime::Error::msg(e.to_string()))?;
-        serde_json::to_vec(&rows).map_err(|e| wasmtime::Error::msg(e.to_string()))
-    }
-}
 
 /// Per-guest sandbox limits. Defaults are the operator-approved values recorded
 /// in ADR-0002.
@@ -79,17 +58,23 @@ impl Default for RuntimeLimits {
     }
 }
 
-/// Store-local host state: the guest's WASI context, its memory limiter, the
-/// host-authoritative [`FirmContext`] (JSON-encoded) the `kbk_ctx_*` imports
-/// expose to the guest (#23), and the optional graph-query backend the
-/// `kbk_query_graph` import uses (#24). `ctx_json` is empty and `query` is `None`
-/// for the raw [`MeshRuntime::dispatch`] path, which wires no host imports.
+/// Store-local host state for a single dispatch: the guest's WASI context, its
+/// memory limiter, and the host-authoritative [`FirmContext`] in two forms — JSON
+/// (`ctx_json`, read back through the `kbk_ctx_*` imports, #23) and typed (`ctx`,
+/// handed to [`HostServices`] for the `kbk_query_graph` / `kbk_emit_event`
+/// imports, #24/#27). `cap` is the optional per-invocation capability threaded to
+/// a *remote* [`HostServices`] in the executor split (#70); it is `None`
+/// in-process. `services` is the backend those two imports call.
+///
+/// `ctx`, `cap`, and `services` are all `None` for the raw
+/// [`MeshRuntime::dispatch`] path, which wires no host imports.
 struct HostState {
     wasi: WasiP1Ctx,
     limits: StoreLimits,
     ctx_json: Vec<u8>,
-    query: Option<QueryBackend>,
-    bus: Option<EventBus>,
+    ctx: Option<FirmContext>,
+    cap: Option<String>,
+    services: Option<Arc<dyn HostServices>>,
 }
 
 /// A compiled guest in the registry.
@@ -162,8 +147,12 @@ pub struct MeshRuntime {
     engine: Engine,
     limits: RuntimeLimits,
     registry: RwLock<HashMap<String, RegisteredGuest>>,
-    store: Option<Arc<GraphStore>>,
-    bus: Option<EventBus>,
+    /// The in-process host-services backing composed from
+    /// [`with_store`](Self::with_store) / [`with_bus`](Self::with_bus).
+    local: LocalHostServices,
+    /// An explicit [`HostServices`] backend (e.g. the executor split's remote
+    /// backend, #70). Takes precedence over `local` when set.
+    services: Option<Arc<dyn HostServices>>,
     metrics: MeshMetrics,
 }
 
@@ -184,24 +173,52 @@ impl MeshRuntime {
             engine,
             limits,
             registry: RwLock::new(HashMap::new()),
-            store: None,
-            bus: None,
+            local: LocalHostServices::default(),
+            services: None,
             metrics: MeshMetrics::default(),
         })
     }
 
-    /// Bind the firm graph so guests' `query_graph` calls can run (#24). Without
-    /// a bound store, a `kbk_query_graph` call traps. Returns `self` for chaining.
+    /// Bind the firm graph so guests' `query_graph` calls can run (#24), via the
+    /// in-process [`LocalHostServices`]. Without a bound store (and no
+    /// [`with_services`](Self::with_services) override), a `kbk_query_graph` call
+    /// traps. Composes with [`with_bus`](Self::with_bus) in either order. Returns
+    /// `self` for chaining.
     pub fn with_store(mut self, store: Arc<GraphStore>) -> Self {
-        self.store = Some(store);
+        self.local = self.local.with_store(store);
         self
     }
 
-    /// Bind an [`EventBus`] so guests' `emit` calls publish onto it (#27/#46).
-    /// Without a bound bus, an emitted event is logged and dropped. Builder-style.
+    /// Bind an [`EventBus`] so guests' `emit` calls publish onto it (#27/#46),
+    /// via the in-process [`LocalHostServices`]. Without a bound bus, an emitted
+    /// event is logged and dropped. Builder-style.
     pub fn with_bus(mut self, bus: EventBus) -> Self {
-        self.bus = Some(bus);
+        self.local = self.local.with_bus(bus);
         self
+    }
+
+    /// Bind an explicit [`HostServices`] backend for the `kbk_query_graph` and
+    /// `kbk_emit_event` imports, overriding the in-process
+    /// [`with_store`](Self::with_store) / [`with_bus`](Self::with_bus) backing.
+    /// The executor split (#70) uses this to route those calls to a remote
+    /// control plane. Builder-style.
+    pub fn with_services(mut self, services: Arc<dyn HostServices>) -> Self {
+        self.services = Some(services);
+        self
+    }
+
+    /// The effective host services for a context-bearing dispatch: an explicit
+    /// [`with_services`](Self::with_services) backend takes precedence; otherwise
+    /// the in-process [`LocalHostServices`] if any backing is bound. `None` means
+    /// a guest's `kbk_query_graph` traps and an emitted event is logged/dropped.
+    fn host_services(&self) -> Option<Arc<dyn HostServices>> {
+        if let Some(services) = &self.services {
+            return Some(services.clone());
+        }
+        if self.local.is_bound() {
+            return Some(Arc::new(self.local.clone()));
+        }
+        None
     }
 
     /// The sandbox limits applied to every dispatch.
@@ -290,7 +307,7 @@ impl MeshRuntime {
     /// A fresh, sandboxed instance is created for the call and dropped afterward.
     pub fn dispatch(&self, name: &str, input: &[u8]) -> Result<Vec<u8>> {
         let module = self.module(name)?;
-        let mut store = self.new_store(Vec::new(), None, None, u64::MAX)?;
+        let mut store = self.new_store(Vec::new(), None, None, None, u64::MAX)?;
         let mut linker: Linker<HostState> = Linker::new(&self.engine);
         self.add_wasi(&mut linker)?;
         let instance = self.instantiate_guest(&mut store, name, &module, &linker)?;
@@ -424,11 +441,9 @@ impl MeshRuntime {
         let ctx_json = serde_json::to_vec(ctx)
             .map_err(|e| MeshError::Engine(format!("serializing firm context: {e}")))?;
         let module = self.module(name)?;
-        let backend = self.store.clone().map(|store| QueryBackend {
-            store,
-            ctx: ctx.clone(),
-        });
-        let mut store = self.new_store(ctx_json, backend, self.bus.clone(), epoch_deadline)?;
+        let services = self.host_services();
+        let mut store =
+            self.new_store(ctx_json, Some(ctx.clone()), None, services, epoch_deadline)?;
         let mut linker: Linker<HostState> = Linker::new(&self.engine);
         self.add_wasi(&mut linker)?;
         self.add_context_imports(&mut linker)?;
@@ -484,13 +499,14 @@ impl MeshRuntime {
     }
 
     /// Publish the graph-query import (#24): `kbk_query_graph(in_ptr, in_len)`,
-    /// which the host services by running the query through [`GuardedStore`] and
-    /// returning the packed `(out_ptr, out_len)` of the JSON [`GraphRows`] written
-    /// back into guest memory.
+    /// which the host services through the bound [`HostServices`] — the in-process
+    /// [`LocalHostServices`](crate::LocalHostServices) runs the query through a
+    /// clearance-enforcing `GuardedStore` — returning the packed
+    /// `(out_ptr, out_len)` of the JSON `GraphRows` written back into guest memory.
     ///
     /// This import is re-entrant: to return a variable-length result the host
-    /// calls back into the guest's own `kbk_alloc`. If no store is bound, the call
-    /// traps (a guest cannot query a runtime with no graph).
+    /// calls back into the guest's own `kbk_alloc`. If no services are bound, the
+    /// call traps (a guest cannot query a runtime with no graph).
     fn add_query_imports(&self, linker: &mut Linker<HostState>) -> Result<()> {
         linker
             .func_wrap(
@@ -508,14 +524,28 @@ impl MeshRuntime {
                     let query: GraphQuery = serde_json::from_slice(&buf)
                         .map_err(|e| wasmtime::Error::msg(format!("invalid GraphQuery: {e}")))?;
 
-                    // Run it through the clearance-enforcing backend.
-                    let backend =
-                        caller.data().query.as_ref().ok_or_else(|| {
+                    // Resolve the host-authoritative caller context, the
+                    // per-invocation capability, and the backing services. Clone
+                    // them out up front so nothing borrows `caller` across the
+                    // service call (which may re-enter the guest below).
+                    let services =
+                        caller.data().services.clone().ok_or_else(|| {
                             wasmtime::Error::msg("no graph bound to this runtime")
                         })?;
-                    // SAFETY of borrows: `run` does not touch `caller`, so take the
-                    // result bytes before reborrowing `caller` mutably below.
-                    let out = backend.run(&query)?;
+                    let ctx = caller
+                        .data()
+                        .ctx
+                        .clone()
+                        .ok_or_else(|| wasmtime::Error::msg("no caller context bound"))?;
+                    let cap = caller.data().cap.clone();
+
+                    // Run it through the (clearance-enforcing) services, then
+                    // JSON-encode the rows for the guest.
+                    let rows = services
+                        .query_graph(&ctx, cap.as_deref(), &query)
+                        .map_err(|e| wasmtime::Error::msg(e.to_string()))?;
+                    let out = serde_json::to_vec(&rows)
+                        .map_err(|e| wasmtime::Error::msg(e.to_string()))?;
 
                     // Hand the result back: allocate space in *guest* memory via
                     // the guest's own allocator, then write the rows there.
@@ -538,9 +568,11 @@ impl MeshRuntime {
     }
 
     /// Publish the event import (#27/#46): `kbk_emit_event(in_ptr, in_len)` reads
-    /// the [`Event`] JSON the guest wrote and publishes it onto the bound
-    /// [`EventBus`]. With no bus bound the event is logged and dropped (never
-    /// retained), matching the host-side [`MeshHost`](crate::MeshHost) behaviour.
+    /// the [`Event`] JSON the guest wrote and publishes it through the bound
+    /// [`HostServices`] — the in-process [`LocalHostServices`](crate::LocalHostServices)
+    /// publishes it onto the bound [`EventBus`]. With no services (and so no bus)
+    /// bound the event is logged and dropped (never retained), matching the
+    /// host-side [`MeshHost`](crate::MeshHost) behaviour.
     fn add_event_imports(&self, linker: &mut Linker<HostState>) -> Result<()> {
         linker
             .func_wrap(
@@ -555,11 +587,19 @@ impl MeshRuntime {
                     memory.read(&caller, in_ptr as usize, &mut buf)?;
                     let event: Event = serde_json::from_slice(&buf)
                         .map_err(|e| wasmtime::Error::msg(format!("invalid Event: {e}")))?;
-                    match caller.data().bus.as_ref() {
-                        Some(bus) => {
-                            bus.emit(event);
+                    // Route through the backing services on behalf of the
+                    // host-authoritative caller. With no services (and so no bus)
+                    // bound, the event is logged and dropped — never retained.
+                    let services = caller.data().services.clone();
+                    let ctx = caller.data().ctx.clone();
+                    let cap = caller.data().cap.clone();
+                    match (services, ctx) {
+                        (Some(services), Some(ctx)) => {
+                            services
+                                .emit_event(&ctx, cap.as_deref(), &event)
+                                .map_err(|e| wasmtime::Error::msg(e.to_string()))?;
                         }
-                        None => tracing::info!(
+                        _ => tracing::info!(
                             target: "kanbrick_mesh::guest",
                             kind = %event.kind,
                             "guest emitted an event but no bus is bound (dropped)"
@@ -700,15 +740,17 @@ impl MeshRuntime {
     }
 
     /// Build a fresh, sandboxed [`Store`] for a single dispatch, carrying the
-    /// (possibly empty) host-authoritative context JSON and optional query
-    /// backend, and armed with `epoch_deadline` engine ticks before it is killed
-    /// (`u64::MAX` = no wall-clock limit). The [`Scheduler`](crate::Scheduler)
-    /// drives the engine epoch that makes a finite deadline fire (#25).
+    /// (possibly empty) host-authoritative context (JSON + typed), the optional
+    /// per-invocation capability, and the optional [`HostServices`] backend, and
+    /// armed with `epoch_deadline` engine ticks before it is killed (`u64::MAX` =
+    /// no wall-clock limit). The [`Scheduler`](crate::Scheduler) drives the engine
+    /// epoch that makes a finite deadline fire (#25).
     fn new_store(
         &self,
         ctx_json: Vec<u8>,
-        query: Option<QueryBackend>,
-        bus: Option<EventBus>,
+        ctx: Option<FirmContext>,
+        cap: Option<String>,
+        services: Option<Arc<dyn HostServices>>,
         epoch_deadline: u64,
     ) -> Result<Store<HostState>> {
         // Locked-down WASI: no preopened dirs, no network, no inherited stdio.
@@ -722,8 +764,9 @@ impl MeshRuntime {
                 wasi,
                 limits,
                 ctx_json,
-                query,
-                bus,
+                ctx,
+                cap,
+                services,
             },
         );
         store.limiter(|s| &mut s.limits);
@@ -1055,5 +1098,127 @@ mod tests {
         let snap = rt.metrics_snapshot();
         let echo = metric_for(&snap, "echo");
         assert_eq!(echo.completed, 1, "scheduler-driven call was counted");
+    }
+
+    // ---- #68 (Track D): the graph/event imports route through `HostServices`. ----
+
+    /// A query-proxy guest: forwards its input bytes to `kbk_query_graph` and
+    /// returns the resulting rows verbatim. Hermetic (no toolchain), mirroring the
+    /// integration `guest_query` test's proxy.
+    const QUERY_PROXY_WAT: &str = r#"
+        (module
+          (import "kanbrick" "kbk_query_graph" (func $query (param i32 i32) (result i64)))
+          (memory (export "memory") 1)
+          (global $next (mut i32) (i32.const 1024))
+          (func (export "kbk_alloc") (param $len i32) (result i32)
+            (local $p i32)
+            global.get $next
+            local.set $p
+            global.get $next
+            local.get $len
+            i32.add
+            global.set $next
+            local.get $p)
+          (func (export "kbk_run") (param $ptr i32) (param $len i32) (result i64)
+            local.get $ptr
+            local.get $len
+            call $query))
+    "#;
+
+    /// An emit-proxy guest: forwards its input bytes (an `Event` JSON) to
+    /// `kbk_emit_event` and returns an empty result region.
+    const EMIT_PROXY_WAT: &str = r#"
+        (module
+          (import "kanbrick" "kbk_emit_event" (func $emit (param i32 i32)))
+          (memory (export "memory") 1)
+          (global $next (mut i32) (i32.const 1024))
+          (func (export "kbk_alloc") (param $len i32) (result i32)
+            (local $p i32)
+            global.get $next
+            local.set $p
+            global.get $next
+            local.get $len
+            i32.add
+            global.set $next
+            local.get $p)
+          (func (export "kbk_run") (param $ptr i32) (param $len i32) (result i64)
+            local.get $ptr
+            local.get $len
+            call $emit
+            i64.const 0))
+    "#;
+
+    /// A mock [`HostServices`] that records the context it is queried with and the
+    /// events it is handed, and returns a canned set of rows for queries. Proves
+    /// the imports dispatch through the trait rather than a concrete store/bus.
+    #[derive(Default)]
+    struct RecordingServices {
+        queried_ctx: std::sync::Mutex<Option<FirmContext>>,
+        emitted: std::sync::Mutex<Vec<Event>>,
+    }
+
+    impl HostServices for RecordingServices {
+        fn query_graph(
+            &self,
+            ctx: &FirmContext,
+            _cap: Option<&str>,
+            _query: &GraphQuery,
+        ) -> std::result::Result<kanbrick_core::abi::GraphRows, crate::services::HostServicesError>
+        {
+            *self.queried_ctx.lock().unwrap() = Some(ctx.clone());
+            Ok(kanbrick_core::abi::GraphRows::new(vec![
+                serde_json::json!({"ok": true}),
+            ]))
+        }
+
+        fn emit_event(
+            &self,
+            _ctx: &FirmContext,
+            _cap: Option<&str>,
+            event: &Event,
+        ) -> std::result::Result<(), crate::services::HostServicesError> {
+            self.emitted.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn query_import_routes_through_host_services_with_authoritative_ctx() {
+        use kanbrick_core::abi::GraphRows;
+
+        let recorder = Arc::new(RecordingServices::default());
+        let mut rt = MeshRuntime::new().unwrap().with_services(recorder.clone());
+        rt.register_module("q", "0.0.0", QUERY_PROXY_WAT.as_bytes())
+            .unwrap();
+
+        let context = ctx("analyst@kanbrick.com", kanbrick_core::ClearanceLevel::L3);
+        let query = serde_json::to_vec(&GraphQuery::new("MATCH (n) RETURN n")).unwrap();
+        let out = rt.run_with_context("q", &context, &query).unwrap();
+
+        // The guest received exactly the rows the trait returned…
+        let rows: GraphRows = serde_json::from_slice(&out).unwrap();
+        assert_eq!(rows, GraphRows::new(vec![serde_json::json!({"ok": true})]));
+        // …and the trait was handed the host-authoritative caller context, proving
+        // the import dispatches through `HostServices` (set via `with_services`),
+        // not a bound store.
+        assert_eq!(
+            recorder.queried_ctx.lock().unwrap().as_ref(),
+            Some(&context)
+        );
+    }
+
+    #[test]
+    fn emit_import_routes_through_host_services() {
+        let recorder = Arc::new(RecordingServices::default());
+        let mut rt = MeshRuntime::new().unwrap().with_services(recorder.clone());
+        rt.register_module("e", "0.0.0", EMIT_PROXY_WAT.as_bytes())
+            .unwrap();
+
+        let context = ctx("analyst@kanbrick.com", kanbrick_core::ClearanceLevel::L3);
+        let event = Event::with_payload("test.kind", serde_json::json!({"x": 1}));
+        let input = serde_json::to_vec(&event).unwrap();
+        rt.run_with_context("e", &context, &input).unwrap();
+
+        assert_eq!(recorder.emitted.lock().unwrap().as_slice(), &[event]);
     }
 }
