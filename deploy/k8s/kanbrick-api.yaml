@@ -1,20 +1,24 @@
-# Kanbrick-V1 API — production-safe, single-pod deployment (#65, Track B).
+# Kanbrick-V1 control plane — single-pod, single-writer tier (#65/#71).
 #
 # Bundles the PersistentVolumeClaim, Deployment, and Service. The Prometheus
 # ServiceMonitor and the KEDA ScaledObject are CRDs, so they live in separate
-# files (servicemonitor.yaml, keda-scaledobject.example.yaml) — this file is pure
-# core API resources and validates with `kubectl apply --dry-run=client`.
+# files (servicemonitor.yaml, keda-scaledobject.yaml) — this file is pure core API
+# resources and validates with `kubectl apply --dry-run=client`.
 #
 # ⚠️ SINGLE REPLICA ONLY. The embedded SparrowDB graph and the content-addressed
-# asset volume are single-writer and not safe to share across pods. Do not raise
-# `replicas` (or the KEDA maxReplicaCount) until the blockers in
-# scale-out-prerequisites.md are resolved.
+# asset volume are single-writer; the control plane owns them and every write. WASM
+# execution is offloaded to the stateless executor pool (kanbrick-executor.yaml),
+# which is what scales — the control plane does NOT. Do not raise `replicas` here
+# (see scale-out.md).
 #
 # Prerequisites:
 #   * A built image (see ../../Dockerfile and scripts/docker-release.sh).
-#   * A Secret `kanbrick-secrets` with key `jwt-secret`:
+#   * A Secret `kanbrick-secrets` with keys `jwt-secret` and `internal-token`
+#     (the latter is the shared transport secret for the internal RPC surface and
+#     the executor pool, #69/#70):
 #       kubectl create secret generic kanbrick-secrets \
-#         --from-literal=jwt-secret="$(openssl rand -hex 32)"
+#         --from-literal=jwt-secret="$(openssl rand -hex 32)" \
+#         --from-literal=internal-token="$(openssl rand -hex 32)"
 #   * One-time seed (the image bundles the seed data + CLI):
 #       kubectl exec deploy/kanbrick-api -- kanbrick-cli seed \
 #         --file /opt/kanbrick/seed/kanbrick_seed_data.cypher \
@@ -41,7 +45,7 @@ metadata:
   labels:
     app.kubernetes.io/name: kanbrick-api
 spec:
-  replicas: 1 # do not raise — see scale-out-prerequisites.md
+  replicas: 1 # do not raise — single-writer control plane (see scale-out.md)
   strategy:
     # The RWO volume cannot be attached to two pods at once, so never run old and
     # new pods simultaneously during a rollout.
@@ -69,15 +73,31 @@ spec:
             - "--port=8080"
             - "--db=/var/lib/kanbrick/firm.db"
             - "--asset-dir=/var/lib/kanbrick/assets"
+            - "--internal-port=8090"
           ports:
             - name: http
               containerPort: 8080
+            # Internal RPC surface (#69/#70): served only when KANBRICK_INTERNAL_TOKEN
+            # is set; confined to executor pods by networkpolicy.yaml. Never public.
+            - name: internal
+              containerPort: 8090
           env:
             - name: KANBRICK_JWT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: kanbrick-secrets
                   key: jwt-secret
+            # Shared transport secret for the internal RPC surface and the executor
+            # pool (#69/#70). Setting it enables the internal listener on 8090.
+            - name: KANBRICK_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: kanbrick-secrets
+                  key: internal-token
+            # Forward guest invocations to the executor pool (#70). Unset ⇒ run
+            # guests in-process (the prior single-pod behaviour).
+            - name: KANBRICK_EXECUTOR_URL
+              value: "http://kanbrick-executor:8080"
             - name: RUST_LOG
               value: "info"
           readinessProbe:
@@ -123,9 +143,11 @@ metadata:
   labels:
     app.kubernetes.io/name: kanbrick-api
 spec:
-  # ClusterIP: in-cluster only. `/metrics` is unauthenticated and exposes the
-  # guest catalogue (see docs/SECURITY.md) — never route it through a public
-  # ingress. Expose only the application paths externally, if any.
+  # ClusterIP: in-cluster only. `/metrics` (on 8080) is unauthenticated and
+  # exposes the guest catalogue (see docs/SECURITY.md); the internal RPC surface
+  # (8090) is the capability-authorized executor callback path — networkpolicy.yaml
+  # confines it to executor pods. Never route either through a public ingress;
+  # expose only the application paths on 8080 externally, if any.
   type: ClusterIP
   selector:
     app.kubernetes.io/name: kanbrick-api
@@ -133,3 +155,6 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+    - name: internal
+      port: 8090
+      targetPort: internal
