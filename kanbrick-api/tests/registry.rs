@@ -30,6 +30,7 @@ fn build(store: Store, asset_dir: &Path) -> (AppState, axum::Router) {
         admission: AdmissionConfig::default(),
         asset_dir: asset_dir.to_path_buf(),
         internal_token: None,
+        executor_url: None,
     };
     let state = AppState::with_config(store, jwt, config).unwrap();
     let app = router(state.clone());

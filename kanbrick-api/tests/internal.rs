@@ -55,6 +55,7 @@ fn fresh() -> (
         admission: AdmissionConfig::default(),
         asset_dir: asset_dir.path().to_path_buf(),
         internal_token: Some(INTERNAL_TOKEN.to_string()),
+        executor_url: None,
     };
     let state = AppState::with_config(store, jwt, config).unwrap();
     let internal = internal_router(state.clone());

@@ -29,6 +29,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::{FromRequestParts, Path, State};
@@ -50,15 +51,26 @@ use serde_json::Value as JsonValue;
 
 mod admission;
 mod caps;
+mod executor;
+mod http_client;
 mod internal;
 mod metrics;
 
 pub use admission::{AdmissionConfig, GuestAdmission};
 pub use caps::InvocationCaps;
+pub use executor::{
+    build_executor, executor_router, spawn_reconcile_loop, Executor, ExecutorClient,
+    ExecutorConfig, ExecutorError, RemoteHostServices, DEFAULT_RECONCILE_INTERVAL,
+};
 pub use internal::internal_router;
 
 /// Default location of the content-addressed asset volume in containers (#64).
 pub const DEFAULT_ASSET_DIR: &str = "/var/lib/kanbrick/assets";
+
+/// Lifetime of a per-invocation capability the control plane mints when
+/// forwarding to an executor (#70). It need only outlast a single invocation's
+/// graph/event callbacks; the cap is revoked the moment the invocation returns.
+const CAP_TTL: Duration = Duration::from_secs(60);
 
 /// The three business guests, embedded at build time (build.rs → `include_bytes!`).
 const VALUATION_WASM: &[u8] = include_bytes!(env!("KANBRICK_VALUATION_GUEST_WASM"));
@@ -116,6 +128,10 @@ pub struct ApiConfig {
     /// Shared transport secret guarding the internal RPC surface (#69). `None`
     /// disables it — every `/internal/*` request fails closed.
     pub internal_token: Option<String>,
+    /// Base URL of the executor pool's `/internal/invoke` surface (#70). When set
+    /// (with an `internal_token`), guest invocations are forwarded to the executor
+    /// pool; when unset, the control plane runs guests in-process as before.
+    pub executor_url: Option<String>,
 }
 
 impl Default for ApiConfig {
@@ -124,6 +140,7 @@ impl Default for ApiConfig {
             admission: AdmissionConfig::default(),
             asset_dir: PathBuf::from(DEFAULT_ASSET_DIR),
             internal_token: None,
+            executor_url: None,
         }
     }
 }
@@ -149,6 +166,9 @@ pub struct AppState {
     /// Shared transport secret guarding the internal RPC surface (#69); `None`
     /// disables it.
     pub internal_token: Option<Arc<str>>,
+    /// Forwarder to the executor pool (#70). `Some` means guest invocations are
+    /// proxied to executors; `None` means they run in-process on this node.
+    pub executor: Option<Arc<ExecutorClient>>,
 }
 
 impl AppState {
@@ -174,6 +194,22 @@ impl AppState {
             mesh.guests().into_iter().map(|g| g.name),
             config.admission,
         ));
+        let internal_token: Option<Arc<str>> = config.internal_token.map(|t| Arc::from(t.as_str()));
+        // Wire the executor forwarder when both an executor URL and the shared
+        // transport secret are configured (#70). A URL without a token is a
+        // misconfiguration (the executor would reject the CP's calls): warn and
+        // fall back to in-process execution rather than failing every invoke.
+        let executor = match (config.executor_url, internal_token.clone()) {
+            (Some(url), Some(token)) => Some(Arc::new(ExecutorClient::new(url, token))),
+            (Some(_), None) => {
+                tracing::warn!(
+                    "KANBRICK_EXECUTOR_URL is set but no internal token is configured; \
+                     executor forwarding disabled (running guests in-process)"
+                );
+                None
+            }
+            (None, _) => None,
+        };
         Ok(AppState {
             store,
             jwt: Arc::new(jwt),
@@ -182,7 +218,8 @@ impl AppState {
             assets,
             bus,
             caps: Arc::new(InvocationCaps::new()),
-            internal_token: config.internal_token.map(|t| Arc::from(t.as_str())),
+            internal_token,
+            executor,
         })
     }
 }
@@ -520,11 +557,41 @@ async fn invoke_guest(
     })?;
 
     // Audit the invocation itself (every guest query is additionally audited by
-    // the GuardedStore the mesh routes through).
+    // the GuardedStore the mesh routes through). Auth, clearance, admission, and
+    // audit all stay on the control plane regardless of where the guest runs.
     AuditLog::new(&state.store).record(&ctx, &format!("guest:{name}"))?;
 
-    let mesh = state.mesh.clone();
     let request = GuestRequest::new(payload);
+
+    // Executor split (#70): if an executor pool is configured, mint a single-
+    // invocation capability bound to the host-authoritative `ctx`, forward the run
+    // to the pool, and revoke the cap the moment it returns. The executor relays
+    // only the opaque cap on callbacks — identity is never trusted over the wire.
+    // With no executor configured, fall through to in-process execution
+    // (byte-for-byte the prior single-pod behaviour).
+    if let Some(executor) = state.executor.clone() {
+        let cap = state.caps.mint(ctx.clone(), CAP_TTL);
+        let guest = name.clone();
+        let forward_ctx = ctx.clone();
+        let forward_cap = cap.clone();
+        let forwarded = tokio::task::spawn_blocking(move || {
+            executor.invoke(&guest, &forward_ctx, &forward_cap, &request)
+        })
+        .await;
+        // The cap's window is exactly this invocation; revoke it regardless of
+        // outcome so a leaked token cannot be replayed afterward.
+        state.caps.revoke(&cap);
+        let response = forwarded.map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                format!("forward task failed: {e}"),
+            )
+        })??;
+        return Ok(Json(response.payload));
+    }
+
+    let mesh = state.mesh.clone();
     let guest = name.clone();
     let response = tokio::task::spawn_blocking(move || mesh.invoke(&guest, &ctx, &request))
         .await

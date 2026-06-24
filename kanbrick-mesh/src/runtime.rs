@@ -326,7 +326,23 @@ impl MeshRuntime {
         ctx: &FirmContext,
         request: &GuestRequest,
     ) -> Result<GuestResponse> {
-        self.invoke_with_deadline(name, ctx, request, u64::MAX)
+        self.invoke_with_cap(name, ctx, None, request)
+    }
+
+    /// Like [`invoke`](Self::invoke) but threading a per-invocation capability
+    /// `cap` to the bound [`HostServices`]. In the executor
+    /// split (#70) the cap is the bearer token a *remote* backend relays to the
+    /// control plane so a guest's `kbk_query_graph` / `kbk_emit_event` callbacks
+    /// run under the caller's host-authoritative identity across the network hop.
+    /// In-process the cap is ignored (identity is already local).
+    pub fn invoke_with_cap(
+        &self,
+        name: &str,
+        ctx: &FirmContext,
+        cap: Option<&str>,
+        request: &GuestRequest,
+    ) -> Result<GuestResponse> {
+        self.invoke_with_deadline_cap(name, ctx, cap, request, u64::MAX)
     }
 
     /// Like [`invoke`](Self::invoke) but the guest is killed after `epoch_deadline`
@@ -340,6 +356,22 @@ impl MeshRuntime {
         request: &GuestRequest,
         epoch_deadline: u64,
     ) -> Result<GuestResponse> {
+        self.invoke_with_deadline_cap(name, ctx, None, request, epoch_deadline)
+    }
+
+    /// The metric-accounted invocation core, threading the optional per-invocation
+    /// `cap`. Both the capability-bearing [`invoke_with_cap`](Self::invoke_with_cap)
+    /// and the deadline-bearing [`invoke_with_deadline`](Self::invoke_with_deadline)
+    /// funnel through here, so every typed call (direct API path, executor path,
+    /// and Scheduler) is counted in the pressure metrics (#63).
+    fn invoke_with_deadline_cap(
+        &self,
+        name: &str,
+        ctx: &FirmContext,
+        cap: Option<&str>,
+        request: &GuestRequest,
+        epoch_deadline: u64,
+    ) -> Result<GuestResponse> {
         // Account the invocation here, the single choke point every typed call
         // funnels through (direct API path *and* the Scheduler), so the pressure
         // metrics (#63) cover both. Unknown guests have no counter — they fail
@@ -348,7 +380,7 @@ impl MeshRuntime {
         if let Some(c) = &counters {
             c.active.fetch_add(1, Ordering::Relaxed);
         }
-        let result = self.invoke_inner(name, ctx, request, epoch_deadline);
+        let result = self.invoke_inner(name, ctx, cap, request, epoch_deadline);
         if let Some(c) = &counters {
             c.active.fetch_sub(1, Ordering::Relaxed);
             match &result {
@@ -367,12 +399,13 @@ impl MeshRuntime {
     }
 
     /// The actual typed invocation: encode the request, run the guest, decode the
-    /// response. Wrapped by [`invoke_with_deadline`](Self::invoke_with_deadline),
+    /// response. Wrapped by [`invoke_with_deadline_cap`](Self::invoke_with_deadline_cap),
     /// which records the metrics around it.
     fn invoke_inner(
         &self,
         name: &str,
         ctx: &FirmContext,
+        cap: Option<&str>,
         request: &GuestRequest,
         epoch_deadline: u64,
     ) -> Result<GuestResponse> {
@@ -380,7 +413,7 @@ impl MeshRuntime {
             name: name.to_string(),
             detail: format!("encoding request: {e}"),
         })?;
-        let output = self.run_with_context_deadline(name, ctx, &input, epoch_deadline)?;
+        let output = self.run_with_context_deadline(name, ctx, cap, &input, epoch_deadline)?;
         GuestResponse::from_json_bytes(&output).map_err(|e| MeshError::BadOutput {
             name: name.to_string(),
             detail: format!("decoding response: {e}"),
@@ -426,15 +459,17 @@ impl MeshRuntime {
     /// imports. Returns the raw output bytes. ([`invoke`](Self::invoke) is the
     /// typed wrapper.)
     pub fn run_with_context(&self, name: &str, ctx: &FirmContext, input: &[u8]) -> Result<Vec<u8>> {
-        self.run_with_context_deadline(name, ctx, input, u64::MAX)
+        self.run_with_context_deadline(name, ctx, None, input, u64::MAX)
     }
 
     /// [`run_with_context`](Self::run_with_context) with an explicit epoch
-    /// deadline (`u64::MAX` = unbounded).
+    /// deadline (`u64::MAX` = unbounded) and an optional per-invocation `cap`
+    /// threaded to the bound [`HostServices`](crate::HostServices) (#70).
     fn run_with_context_deadline(
         &self,
         name: &str,
         ctx: &FirmContext,
+        cap: Option<&str>,
         input: &[u8],
         epoch_deadline: u64,
     ) -> Result<Vec<u8>> {
@@ -442,8 +477,13 @@ impl MeshRuntime {
             .map_err(|e| MeshError::Engine(format!("serializing firm context: {e}")))?;
         let module = self.module(name)?;
         let services = self.host_services();
-        let mut store =
-            self.new_store(ctx_json, Some(ctx.clone()), None, services, epoch_deadline)?;
+        let mut store = self.new_store(
+            ctx_json,
+            Some(ctx.clone()),
+            cap.map(|c| c.to_string()),
+            services,
+            epoch_deadline,
+        )?;
         let mut linker: Linker<HostState> = Linker::new(&self.engine);
         self.add_wasi(&mut linker)?;
         self.add_context_imports(&mut linker)?;
@@ -1154,6 +1194,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingServices {
         queried_ctx: std::sync::Mutex<Option<FirmContext>>,
+        queried_cap: std::sync::Mutex<Option<String>>,
         emitted: std::sync::Mutex<Vec<Event>>,
     }
 
@@ -1161,11 +1202,12 @@ mod tests {
         fn query_graph(
             &self,
             ctx: &FirmContext,
-            _cap: Option<&str>,
+            cap: Option<&str>,
             _query: &GraphQuery,
         ) -> std::result::Result<kanbrick_core::abi::GraphRows, crate::services::HostServicesError>
         {
             *self.queried_ctx.lock().unwrap() = Some(ctx.clone());
+            *self.queried_cap.lock().unwrap() = cap.map(str::to_string);
             Ok(kanbrick_core::abi::GraphRows::new(vec![
                 serde_json::json!({"ok": true}),
             ]))
@@ -1220,5 +1262,79 @@ mod tests {
         rt.run_with_context("e", &context, &input).unwrap();
 
         assert_eq!(recorder.emitted.lock().unwrap().as_slice(), &[event]);
+    }
+
+    // ---- #70 (Track F): the per-invocation capability threads to HostServices. ----
+
+    /// A guest that ignores its request and queries the graph with an embedded
+    /// `GraphQuery` (`{"cypher":"RETURN 1"}`, 21 bytes at offset 0). It exists to
+    /// prove that the per-invocation `cap` set on `invoke_with_cap` reaches the
+    /// bound [`HostServices`] — the seam the executor's remote backend hangs on.
+    const QUERY_CAP_WAT: &str = r#"
+        (module
+          (import "kanbrick" "kbk_query_graph" (func $query (param i32 i32) (result i64)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{\"cypher\":\"RETURN 1\"}")
+          (global $next (mut i32) (i32.const 1024))
+          (func (export "kbk_alloc") (param $len i32) (result i32)
+            (local $p i32)
+            global.get $next
+            local.set $p
+            global.get $next
+            local.get $len
+            i32.add
+            global.set $next
+            local.get $p)
+          (func (export "kbk_run") (param $ptr i32) (param $len i32) (result i64)
+            i32.const 0
+            i32.const 21
+            call $query))
+    "#;
+
+    #[test]
+    fn invoke_with_cap_threads_capability_to_host_services() {
+        let recorder = Arc::new(RecordingServices::default());
+        let mut rt = MeshRuntime::new().unwrap().with_services(recorder.clone());
+        rt.register_module("qcap", "0.0.0", QUERY_CAP_WAT.as_bytes())
+            .unwrap();
+
+        let context = ctx("analyst@kanbrick.com", kanbrick_core::ClearanceLevel::L3);
+        // The decoded response is irrelevant here (the recorder returns rows that
+        // are not a GuestResponse); we only assert the cap + ctx reached the trait.
+        let _ = rt.invoke_with_cap(
+            "qcap",
+            &context,
+            Some("cap-token-xyz"),
+            &GuestRequest::new(serde_json::Value::Null),
+        );
+        assert_eq!(
+            recorder.queried_cap.lock().unwrap().as_deref(),
+            Some("cap-token-xyz"),
+            "invoke_with_cap threads the capability to HostServices"
+        );
+        assert_eq!(
+            recorder.queried_ctx.lock().unwrap().as_ref(),
+            Some(&context)
+        );
+    }
+
+    #[test]
+    fn plain_invoke_threads_no_capability() {
+        let recorder = Arc::new(RecordingServices::default());
+        let mut rt = MeshRuntime::new().unwrap().with_services(recorder.clone());
+        rt.register_module("qcap", "0.0.0", QUERY_CAP_WAT.as_bytes())
+            .unwrap();
+
+        let context = ctx("analyst@kanbrick.com", kanbrick_core::ClearanceLevel::L3);
+        let _ = rt.invoke(
+            "qcap",
+            &context,
+            &GuestRequest::new(serde_json::Value::Null),
+        );
+        assert_eq!(
+            recorder.queried_cap.lock().unwrap().as_deref(),
+            None,
+            "the in-process path passes no capability"
+        );
     }
 }
