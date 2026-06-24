@@ -90,8 +90,41 @@ is constrained on three axes:
 Every upload and activation is recorded through the same `AuditLog` as guest
 queries. The policy that binds a name to a version/clearance/asset URI is stored
 in SparrowDB (the source of truth) and replayed at boot; the asset *bytes* live
-on the asset volume, which must be on durable, single-pod storage (see
-`deploy/k8s/scale-out-prerequisites.md`).
+on the asset volume, which must be on durable, single-pod (control-plane) storage
+(see `deploy/k8s/scale-out.md`).
+
+## Control-plane / executor split (#70/#71, ADR-0008)
+
+When scaled out, WASM execution moves onto a stateless **executor** pool while the
+single **control plane** (CP) keeps the graph, the asset registry, every write,
+and the authoritative identity. This preserves the host-authoritative-identity
+invariant **across the network hop**:
+
+- **Capability tokens.** Per invocation, the CP mints a short-lived, single-use,
+  unguessable **capability** (two v4 UUIDs ⇒ 244 bits of entropy) bound
+  server-side to the caller's `FirmContext`. It forwards the invocation to an
+  executor relaying **only** the opaque capability — never the identity. When a
+  guest calls back to read the graph or emit an event, the executor presents the
+  capability; the CP resolves it to the bound identity **server-side** and runs
+  the read through the same clearance-enforcing `GuardedStore`. A compromised
+  executor (or a WASM escape) therefore cannot name a different identity or read
+  above the clearance the CP bound to the invocation. A forged or expired
+  capability is a `401` ⇒ the guest's query traps (no data leak). The capability
+  is revoked the moment the invocation returns. The `FirmContext` bytes never
+  leave the CP process; the `ctx` sent to the executor is read-only state for the
+  guest's `kbk_ctx_*` imports and is never trusted on a callback.
+- **Transport secret.** Both the CP's internal RPC surface and the executor's
+  `/internal/invoke` are gated by a shared secret (`x-kanbrick-internal-token`),
+  compared in **constant time** and **failing closed** when unset. It is supplied
+  via the `internal-token` Secret key, never logged.
+- **Network confinement.** The internal RPC surface and the executor are
+  **ClusterIP-only**; `deploy/k8s/networkpolicy.yaml` confines the internal port
+  to CP↔executor and keeps the executor off any public ingress. The executor is
+  **not internet-facing**: no public surface, no store, no JWT.
+- **In-cluster transport.** CP↔executor traffic is plain HTTP between ClusterIP
+  Services (never through the public ingress). As with the public API, terminate
+  TLS at the mesh/proxy layer if your threat model requires in-cluster
+  confidentiality.
 
 ## Threat model & test coverage
 
@@ -106,6 +139,9 @@ on the asset volume, which must be on durable, single-pod storage (see
 | Audit completeness | every guarded query audited | `guarded`, `data_integrity` tests |
 | Malicious/forged guest artifact | L5-only registry, SHA-256 verify on write+read, compile-first atomic swap | `kanbrick-api/tests/registry.rs` |
 | Clearance downgrade via activation | embedded clearance floor enforced | `registry.rs` |
+| Identity forgery over the network (executor→CP) | host-authoritative capability; `ctx` never trusted on a callback | `kanbrick-api/tests/executor.rs` |
+| Compromised executor reading above clearance | cap resolves to the CP-bound clearance server-side; forged/expired cap ⇒ `401` ⇒ trap | `executor.rs` |
+| Unauthorized access to the internal RPC surface | shared transport secret (constant-time, fails closed); ClusterIP-only + NetworkPolicy | `internal.rs`, `executor.rs` |
 
 ## Known limitations (for the security review — #48 is HITL)
 
@@ -125,4 +161,6 @@ on the asset volume, which must be on durable, single-pod storage (see
   however, expose the **guest catalogue** through the `guest="…"` label (e.g.
   `valuation`, `compliance`). Treat it as an **in-cluster scrape surface only**:
   bind it to the internal `Service`/`ServiceMonitor` and never route `/metrics`
-  through the public ingress.
+  through the public ingress. The **executor** pool serves the same `/metrics`
+  (it is the KEDA scale signal, #71) under the same in-cluster-only treatment, and
+  is confined off any public ingress by `deploy/k8s/networkpolicy.yaml`.

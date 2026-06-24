@@ -1,0 +1,41 @@
+# KEDA autoscaling for the executor pool (#71, Track G) — LIVE.
+#
+# Promoted from the inert `keda-scaledobject.example.yaml` of #65: the
+# control-plane / executor split (#70) makes horizontal scale-out safe, because
+# the tier this targets — the EXECUTOR — is stateless. The control plane
+# (kanbrick-api) owns the single-writer graph + asset volume and is NOT scaled; it
+# stays `replicas: 1`.
+#
+# Scales the executor Deployment on `kanbrick_mesh_pressure_ratio` (#63): the
+# in-flight guest concurrency over capacity, scraped from the executor pods'
+# /metrics (servicemonitor-executor.yaml). There is deliberately NO GPU/DCGM
+# trigger — Kanbrick guests run CPU-only in wasmtime.
+#
+# Requires the KEDA CRDs (keda.sh). As a CRD it cannot be validated by
+# `kubectl apply --dry-run=client`; use `--dry-run=server` on a cluster with KEDA,
+# or kubeconform with the KEDA schema.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: kanbrick-executor
+  labels:
+    app.kubernetes.io/name: kanbrick-executor
+    app.kubernetes.io/part-of: kanbrick
+spec:
+  scaleTargetRef:
+    # The stateless executor Deployment — NOT the control plane.
+    name: kanbrick-executor
+  minReplicaCount: 1
+  maxReplicaCount: 10 # tune to your cluster's capacity
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-operated.monitoring.svc:9090
+        metricName: kanbrick_mesh_pressure_ratio
+        # Aggregate executor pressure across the pool and scale when sustained
+        # above threshold. The `service`/`job` label depends on your Prometheus
+        # relabeling — adjust the selector to match the executor scrape target so
+        # the control plane's own pressure is not mixed in.
+        query: max(kanbrick_mesh_pressure_ratio{service="kanbrick-executor"})
+        threshold: "0.7"
+        activationThreshold: "0.1"

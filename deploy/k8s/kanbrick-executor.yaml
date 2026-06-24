@@ -1,0 +1,130 @@
+# Kanbrick-V1 executor pool — stateless guest-execution tier (#70/#71, Track G).
+#
+# The executor runs guest WASM on a horizontally-scalable, disposable pool. It is
+# STATELESS: no PersistentVolumeClaim, no graph, no asset volume, no JWT, and no
+# public surface. A guest's graph reads and event emits are proxied back to the
+# control plane's internal RPC surface (kanbrick-api:8090), authorized by a
+# per-invocation capability token — identity is recovered server-side on the CP
+# from the capability and is never trusted from the wire (ADR-0008).
+#
+# Because it holds no single-writer state, this Deployment is the tier KEDA scales
+# (keda-scaledobject.yaml) on `kanbrick_mesh_pressure_ratio`. The control plane
+# (kanbrick-api.yaml) stays `replicas: 1`.
+#
+# Prerequisites:
+#   * The same image as the control plane (../../Dockerfile); the run-mode is
+#     selected with `--mode=executor`.
+#   * The `kanbrick-secrets` Secret with key `internal-token` (shared transport
+#     secret), the same value the control plane is given:
+#       kubectl create secret generic kanbrick-secrets \
+#         --from-literal=jwt-secret="$(openssl rand -hex 32)" \
+#         --from-literal=internal-token="$(openssl rand -hex 32)"
+#   * Apply AFTER the control plane so KANBRICK_CP_URL resolves and the boot-time
+#     registry replay succeeds (the executor retries via the reconcile loop
+#     regardless).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kanbrick-executor
+  labels:
+    app.kubernetes.io/name: kanbrick-executor
+    app.kubernetes.io/part-of: kanbrick
+spec:
+  # Default floor; KEDA (keda-scaledobject.yaml) owns the live replica count
+  # between minReplicaCount and maxReplicaCount. Stateless, so RollingUpdate is
+  # safe (no single-attach volume) — unlike the control plane's Recreate.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kanbrick-executor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kanbrick-executor
+        app.kubernetes.io/part-of: kanbrick
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001 # matches the `kanbrick` user pinned in the Dockerfile
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kanbrick-executor
+          # The same image as the control plane (built via ../../Dockerfile); only
+          # the run-mode differs.
+          image: ghcr.io/tnsr-q/kanbrick-v1:latest
+          args:
+            - "--mode=executor"
+            - "--port=8080"
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # Control plane's internal RPC surface (graph/event/asset/registry
+            # callbacks). Service DNS of kanbrick-api on its internal port.
+            - name: KANBRICK_CP_URL
+              value: "http://kanbrick-api:8090"
+            # Shared transport secret presented on every CP call and required on
+            # this pod's own /internal/invoke. Same value as the control plane.
+            - name: KANBRICK_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: kanbrick-secrets
+                  key: internal-token
+            - name: RUST_LOG
+              value: "info"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true # only /tmp (emptyDir) is writable
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            # WASM execution is the CPU-heavy part of an invocation, so the
+            # executor gets a higher CPU ceiling than the control plane.
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "2"
+              memory: "512Mi"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kanbrick-executor
+  labels:
+    app.kubernetes.io/name: kanbrick-executor
+    app.kubernetes.io/part-of: kanbrick
+spec:
+  # ClusterIP: in-cluster only. This Service carries BOTH the control plane's
+  # /internal/invoke calls and Prometheus's /metrics scrape (the executor serves
+  # them on one port); the networkpolicy.yaml confines who may reach it, and the
+  # transport secret gates /internal/invoke. Never route it through a public
+  # ingress. kube-proxy load-balances invocations across executor pods.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kanbrick-executor
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

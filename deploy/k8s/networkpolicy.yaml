@@ -1,0 +1,80 @@
+# Network confinement for the control-plane / executor split (#71, Track G).
+#
+# Two policies pin the two-tier topology at L3/L4:
+#   * the control plane's INTERNAL RPC port (8090) is reachable ONLY by executor
+#     pods (graph/event/asset/registry callbacks) — never from the public ingress;
+#   * the executor is reachable ONLY by the control plane (/internal/invoke) and
+#     Prometheus (/metrics) — it has NO public ingress at all.
+#
+# Both policies select by `app.kubernetes.io/name` within the namespace they are
+# applied to. The Prometheus source is environment-specific: adjust the
+# `namespaceSelector` below to your monitoring namespace (the label
+# `kubernetes.io/metadata.name` is auto-set by Kubernetes on every Namespace).
+#
+# NetworkPolicy is only enforced by a CNI that implements it (Calico, Cilium,
+# Antrea, …). On a cluster without NetworkPolicy enforcement these are inert — the
+# transport secret (x-kanbrick-internal-token) remains the app-layer guard.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kanbrick-api
+  labels:
+    app.kubernetes.io/name: kanbrick-api
+    app.kubernetes.io/part-of: kanbrick
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kanbrick-api
+  policyTypes:
+    - Ingress
+  ingress:
+    # Public API (8080): reachable by the ingress controller / clients, and by
+    # Prometheus scraping the control plane's own /metrics. Selecting the pod with
+    # an Ingress policy is default-deny, so this rule must explicitly re-open 8080.
+    - ports:
+        - protocol: TCP
+          port: 8080
+    # Internal RPC surface (8090): ONLY executor pods may reach it. This is the
+    # capability-authorized callback surface; it must never be publicly reachable.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kanbrick-executor
+      ports:
+        - protocol: TCP
+          port: 8090
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kanbrick-executor
+  labels:
+    app.kubernetes.io/name: kanbrick-executor
+    app.kubernetes.io/part-of: kanbrick
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kanbrick-executor
+  policyTypes:
+    - Ingress
+  ingress:
+    # Control plane → executor /internal/invoke (transport-secret gated).
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kanbrick-api
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Prometheus → executor /metrics (in-cluster scrape only). Adjust the
+    # namespace label to match where your Prometheus runs.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
+  # No other ingress rule ⇒ all other sources (incl. any public ingress) are
+  # denied. The executor is not internet-facing.
