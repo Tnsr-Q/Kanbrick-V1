@@ -33,7 +33,8 @@ use serde::{Deserialize, Serialize};
 use crate::{asset_error, ApiError, AppState};
 
 /// Header carrying the shared transport secret for the internal RPC surface.
-const HEADER_INTERNAL_TOKEN: &str = "x-kanbrick-internal-token";
+/// Reused by the executor surface (#70), which is gated by the same secret.
+pub(crate) const HEADER_INTERNAL_TOKEN: &str = "x-kanbrick-internal-token";
 
 /// Build the internal RPC router. Mount on a dedicated, ClusterIP-only listener
 /// (#70/#71); never expose it through the public ingress.
@@ -74,8 +75,9 @@ async fn require_internal_token(
 }
 
 /// Constant-time byte-slice equality (defense-in-depth for the transport secret).
-/// The length is allowed to leak; the secret's content is not.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+/// The length is allowed to leak; the secret's content is not. Reused by the
+/// executor surface (#70).
+pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -155,23 +157,25 @@ async fn fetch_asset(
 
 // ── /internal/registry ──────────────────────────────────────────────────────
 
-/// One guest in the registry listing.
-#[derive(Debug, Serialize)]
-struct RegistryGuest {
-    name: String,
-    version: String,
-    min_clearance: ClearanceLevel,
-    asset_uri: String,
-    source: String,
+/// One guest in the registry listing. Deserializable so executors (#70) can read
+/// it back when replaying/reconciling against this surface.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct RegistryGuest {
+    pub(crate) name: String,
+    pub(crate) version: String,
+    pub(crate) min_clearance: ClearanceLevel,
+    pub(crate) asset_uri: String,
+    pub(crate) source: String,
 }
 
-/// `GET /internal/registry` response.
-#[derive(Debug, Serialize)]
-struct RegistryResponse {
+/// `GET /internal/registry` response. Deserializable for the executor reconcile
+/// loop (#70).
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct RegistryResponse {
     /// Monotonic counter bumped on every activation; executors reconcile on bump.
-    generation: u64,
+    pub(crate) generation: u64,
     /// Every persisted guest policy (embedded + registry).
-    guests: Vec<RegistryGuest>,
+    pub(crate) guests: Vec<RegistryGuest>,
 }
 
 /// List the activated-guest set and the current registry generation so an

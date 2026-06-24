@@ -29,6 +29,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true
 uuid.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
