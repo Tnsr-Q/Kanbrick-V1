@@ -14,9 +14,11 @@
 //! * [`migrations::Migrator`] — versioned schema & seed migrations (issue #10).
 //! * [`seed`] — Cypher seed-file loading (issue #11).
 //! * [`guest_policy`] — persisted per-guest version/clearance/asset policy (#64).
+//! * [`registry_meta`] — persisted registry generation counter (#69).
 
 pub mod guest_policy;
 pub mod migrations;
+pub mod registry_meta;
 pub mod schema;
 pub mod seed;
 pub mod store;
@@ -27,6 +29,7 @@ pub use guest_policy::{
     SOURCE_REGISTRY,
 };
 pub use migrations::{Migration, MigrationOutcome, Migrator};
+pub use registry_meta::{bump_registry_generation, read_registry_generation};
 pub use schema::{CompanyNode, PersonNode, SegmentNode};
 pub use store::Store;
 pub use value::Params;
