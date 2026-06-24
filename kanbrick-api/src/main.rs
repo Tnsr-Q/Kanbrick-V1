@@ -81,12 +81,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .asset_dir
         .or_else(|| std::env::var_os("KANBRICK_ASSET_DIR").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from(DEFAULT_ASSET_DIR));
+    // Shared transport secret for the internal RPC surface (#69). The internal
+    // listener itself is wired in the executor split (#70); until then this just
+    // populates the config. Empty/unset leaves the internal surface disabled.
+    let internal_token = std::env::var("KANBRICK_INTERNAL_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
     let config = ApiConfig {
         admission: AdmissionConfig {
             guest_concurrency,
             queue_limit,
         },
         asset_dir,
+        internal_token,
     };
 
     let store = Store::open(&cli.db)?;

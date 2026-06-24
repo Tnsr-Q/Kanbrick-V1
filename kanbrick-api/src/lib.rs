@@ -42,16 +42,20 @@ use kanbrick_core::abi::GuestRequest;
 use kanbrick_core::{ClearanceLevel, Error, ErrorKind, FirmContext};
 use kanbrick_mesh::{AssetError, AssetStore, EventBus, MeshError, MeshRuntime};
 use kanbrick_store::{
-    list_guest_policies, read_guest_policy, write_guest_policy, GuestPolicy, Store,
-    SOURCE_EMBEDDED, SOURCE_REGISTRY,
+    bump_registry_generation, list_guest_policies, read_guest_policy, write_guest_policy,
+    GuestPolicy, Store, SOURCE_EMBEDDED, SOURCE_REGISTRY,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 mod admission;
+mod caps;
+mod internal;
 mod metrics;
 
 pub use admission::{AdmissionConfig, GuestAdmission};
+pub use caps::InvocationCaps;
+pub use internal::internal_router;
 
 /// Default location of the content-addressed asset volume in containers (#64).
 pub const DEFAULT_ASSET_DIR: &str = "/var/lib/kanbrick/assets";
@@ -102,13 +106,16 @@ fn embedded_floor(name: &str) -> Option<ClearanceLevel> {
         .map(|g| g.min_clearance)
 }
 
-/// API configuration (#63 admission limits + #64 asset volume).
+/// API configuration (#63 admission limits + #64 asset volume + #69 internal RPC).
 #[derive(Debug, Clone)]
 pub struct ApiConfig {
     /// Per-guest admission limits.
     pub admission: AdmissionConfig,
     /// Root of the content-addressed guest asset volume.
     pub asset_dir: PathBuf,
+    /// Shared transport secret guarding the internal RPC surface (#69). `None`
+    /// disables it — every `/internal/*` request fails closed.
+    pub internal_token: Option<String>,
 }
 
 impl Default for ApiConfig {
@@ -116,6 +123,7 @@ impl Default for ApiConfig {
         ApiConfig {
             admission: AdmissionConfig::default(),
             asset_dir: PathBuf::from(DEFAULT_ASSET_DIR),
+            internal_token: None,
         }
     }
 }
@@ -133,6 +141,14 @@ pub struct AppState {
     pub admission: Arc<GuestAdmission>,
     /// Content-addressed store for runtime-activated guest artifacts (#64).
     pub assets: Arc<AssetStore>,
+    /// The control-plane event bus, shared with the mesh so in-process guest
+    /// emits and executor `/internal/events` callbacks land on the same bus (#69).
+    pub bus: EventBus,
+    /// Per-invocation capability registry for the internal RPC surface (#69).
+    pub caps: Arc<InvocationCaps>,
+    /// Shared transport secret guarding the internal RPC surface (#69); `None`
+    /// disables it.
+    pub internal_token: Option<Arc<str>>,
 }
 
 impl AppState {
@@ -152,7 +168,8 @@ impl AppState {
     ) -> Result<Self, Error> {
         let store = Arc::new(store);
         let assets = Arc::new(AssetStore::new(config.asset_dir));
-        let mesh = Arc::new(build_mesh(store.clone(), &assets)?);
+        let bus = EventBus::new();
+        let mesh = Arc::new(build_mesh(store.clone(), &assets, bus.clone())?);
         let admission = Arc::new(GuestAdmission::new(
             mesh.guests().into_iter().map(|g| g.name),
             config.admission,
@@ -163,6 +180,9 @@ impl AppState {
             mesh,
             admission,
             assets,
+            bus,
+            caps: Arc::new(InvocationCaps::new()),
+            internal_token: config.internal_token.map(|t| Arc::from(t.as_str())),
         })
     }
 }
@@ -175,10 +195,8 @@ impl AppState {
 /// 2. replay registry-activated guests by loading their bytes from the asset store
 ///    and hot-reloading them. A missing/corrupt/invalid artifact is logged and
 ///    skipped, leaving the embedded guest in place.
-fn build_mesh(store: Arc<Store>, assets: &AssetStore) -> Result<MeshRuntime, Error> {
-    let mut mesh = MeshRuntime::new()?
-        .with_store(store.clone())
-        .with_bus(EventBus::new());
+fn build_mesh(store: Arc<Store>, assets: &AssetStore, bus: EventBus) -> Result<MeshRuntime, Error> {
+    let mut mesh = MeshRuntime::new()?.with_store(store.clone()).with_bus(bus);
 
     for guest in EMBEDDED_GUESTS {
         mesh.register_module(guest.name, GUEST_VERSION, guest.wasm)?;
@@ -607,6 +625,9 @@ async fn activate_guest(
         SOURCE_REGISTRY,
     );
     write_guest_policy(&state.store, &policy)?;
+    // Bump the persisted registry generation so executors (#70) detect the change
+    // and reconcile (re-pull the asset + hot-reload).
+    bump_registry_generation(&state.store)?;
     AuditLog::new(&state.store).record(&ctx, &format!("guest:activate:{name}:{}", req.version))?;
 
     Ok(Json(serde_json::json!({
