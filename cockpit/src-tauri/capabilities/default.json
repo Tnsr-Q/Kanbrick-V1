@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability set for the Cockpit main window. P7.1 grants only the Tauri core defaults; sidecar/shell and HTTP permissions are added in P7.2+.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

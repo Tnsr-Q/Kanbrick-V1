@@ -1,0 +1,15 @@
+# Node / Vite
+node_modules
+dist
+dist-ssr
+*.local
+
+# Tauri / Rust build output (also covered by the repo-root **/target rule)
+src-tauri/target
+src-tauri/gen/schemas
+
+# Lockfiles are (re)generated on first install/build in a Tauri-capable env;
+# they are intentionally not committed for the P7.1 scaffold (no network in CI
+# here resolves them). The first `npm install` / `tauri build` produces them.
+package-lock.json
+src-tauri/Cargo.lock
