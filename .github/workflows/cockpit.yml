@@ -1,0 +1,120 @@
+name: Cockpit (L5)
+
+# Builds the L5 Cockpit (Tauri v2) + its bundled kanbrick-api sidecar for the host
+# triple and locks the thin path (login -> /me) into CI (P7.6, #92). Kept as a
+# separate workflow with a path filter so the heavy webkit/Tauri build only runs
+# when the Cockpit or the crates it bundles change — the existing Rust gates in
+# ci.yml are untouched.
+
+on:
+  push:
+    branches: [main]
+    paths: &cockpit_paths
+      - "cockpit/**"
+      - "kanbrick-api/**"
+      - "kanbrick-auth/**"
+      - "kanbrick-core/**"
+      - "kanbrick-store/**"
+      - "kanbrick-mesh/**"
+      - "kanbrick-cli/**"
+      - "seed/**"
+      - ".github/workflows/cockpit.yml"
+  pull_request:
+    branches: [main]
+    paths: *cockpit_paths
+  workflow_dispatch:
+
+concurrency:
+  group: cockpit-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cockpit:
+    name: Build cockpit + login→/me smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Initialize SparrowDB submodule (required to build kanbrick-api)
+        run: git submodule update --init --depth 1 crates/sparrowdb
+
+      - name: Initialize remaining vendored submodules (best-effort)
+        continue-on-error: true
+        run: |
+          git submodule update --init --depth 1 \
+            crates/sparrowdb-ontology crates/ironclaw crates/tachyon-mesh \
+            || echo "::warning::Some vendored submodules failed to init; they are excluded from the build graph."
+
+      - name: Install Rust toolchain (pinned via rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          # kanbrick-mesh's build script compiles the WASM guests during the
+          # kanbrick-api build, so the wasm target must be present.
+          targets: wasm32-wasip1
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            cockpit/src-tauri
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('cockpit/package.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
+      - name: Install Tauri system dependencies (Linux / webkit2gtk 4.1)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libsoup-3.0-dev
+
+      - name: Install JS dependencies
+        working-directory: cockpit
+        run: npm install
+
+      - name: Stage the sidecar (build kanbrick-api for the host triple)
+        working-directory: cockpit
+        run: npm run sidecar
+
+      - name: Build the frontend (tsc typecheck + vite build)
+        working-directory: cockpit
+        run: npm run build
+
+      - name: Cockpit Rust — format check
+        working-directory: cockpit/src-tauri
+        run: cargo fmt --check
+
+      - name: Cockpit Rust — clippy (deny warnings)
+        working-directory: cockpit/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Cockpit Rust — unit tests
+        working-directory: cockpit/src-tauri
+        run: cargo test
+
+      - name: Build the Tauri app (host triple, no installers)
+        working-directory: cockpit
+        run: npm run tauri build -- --no-bundle
+
+      - name: Smoke e2e — login → /me (headless, real sidecar)
+        run: bash cockpit/scripts/smoke-e2e.sh
