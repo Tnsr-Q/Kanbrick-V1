@@ -82,8 +82,35 @@ contract (ADR-0016) · #91 `/me` panel · #92 CI e2e.
 bridge · #96 Ironclaw RBAC/DLP + ADR-0010 · #97 frontend ADR-0011 · #98 egress ADR-0017 ·
 #99 tenancy ADR-0015.
 
-P7 and P8 run in parallel. Feature phases P9–P14 build on the P8 ADRs; their slices are
-fully enumerated in each epic body and become discrete issues as the de-risk lands.
+P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
+(#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator
+decision, 2026-06-25) — so each slice's final shape reflects its probe's outcome.
+
+### 5a. Staging — what unblocks filing which slices
+
+The trigger is **specific**, not "all of P8": most *backend* slices gate only on the **P7 shell**
++ primitives that already exist; the *UI* slices gate on the **frontend ADR**; a few
+security/topology slices gate on their one named probe. Closing a de-risk issue is the signal to
+open its downstream slices.
+
+| De-risk lands | ADR | Then file (as discrete issues) |
+|---|---|---|
+| **#93** P8.1 submodules / single runtime | 0014 | P9.1–9.2 provider crate + wire adapters; clears the ground for every other probe |
+| **#94** P8.2 Stronghold enclave | 0009 | P9.3 per-employee key custody; informs P11.4 per-step key injection |
+| **#95** P8.3 MCP bridge | — | P11 loop **tool-calls** (run engine works without it; this adds external tools) |
+| **#96** P8.4 Ironclaw RBAC/DLP | 0010 | P9.6 DLP send-gate; restrict-only overlay used program-wide |
+| **#97** P8.5 frontend (React+Vite) | 0011 | **every UI slice** — P10.3/10.5, P11.6/11.7, P12.5, P13.6, P14.6 |
+| **#98** P8.6 egress allowlist | 0017 | P9.6 real outbound provider calls (pairs with #96) |
+| **#99** P8.7 tenancy topology | 0015 | P14.2–14.6 CompanyState/routing/catalogs; P12.3 budget central-queue |
+
+**Fileable the moment P7 lands (no P8 gate):** P10.1/10.2/10.4/10.6/10.7 (messenger + visualizer
+backend), P11.1/11.2/11.3 (skill/loop schema + ScopeGrants routing + loop compiler), P13.1–13.5
+(graph.access stream + ProjectScope granularity — ADR-0018 is authored inside P13.3 itself, not a
+P8 probe), P14.1 (multi-org `FirmContext`). Don't hold these behind P8 — only their UI siblings
+wait on #97.
+
+The same map lives as a reverse index (close-probe → open-these) in a comment on the de-risk
+epic **#79**, so closing a probe surfaces exactly which slices to open next.
 
 ## 6. ADR index (one-way doors)
 
