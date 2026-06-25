@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import {
   getSidecarStatus,
-  getSessionStatus,
   logout,
   onSidecarStatus,
+  sessionRefresh,
   type SidecarStatus,
 } from "./api";
 import Login from "./Login";
@@ -21,9 +21,12 @@ const SIDECAR_TONE = {
   failed: "is-error",
 } as const;
 
+/** `unknown` while the held token is being validated against `/me` (P7.4). */
+type Auth = "unknown" | "in" | "out";
+
 export default function App() {
   const [sidecar, setSidecar] = useState<SidecarStatus>({ state: "starting" });
-  const [authed, setAuthed] = useState(false);
+  const [auth, setAuth] = useState<Auth>("unknown");
 
   useEffect(() => {
     let active = true;
@@ -45,14 +48,16 @@ export default function App() {
     };
   }, []);
 
-  // Re-check the session once the API is reachable — covers a token still held
-  // host-side after a webview reload (P7.3 persistence).
+  // Once the API is reachable, validate any held token against `/me` through the
+  // host auth bridge (ADR-0016) — covers a session surviving a webview reload,
+  // and detects an expired token (a 401 clears it host-side).
   useEffect(() => {
     if (sidecar.state !== "ready") return;
     let active = true;
-    getSessionStatus()
-      .then((s) => active && setAuthed(s.authenticated))
-      .catch(() => {});
+    setAuth("unknown");
+    sessionRefresh()
+      .then((s) => active && setAuth(s.authenticated ? "in" : "out"))
+      .catch(() => active && setAuth("out"));
     return () => {
       active = false;
     };
@@ -62,7 +67,7 @@ export default function App() {
     try {
       await logout();
     } finally {
-      setAuthed(false);
+      setAuth("out");
     }
   };
 
@@ -86,7 +91,12 @@ export default function App() {
               )}
             </span>
           </div>
-        ) : authed ? (
+        ) : auth === "unknown" ? (
+          <div className="status is-pending" role="status">
+            <span className="dot" />
+            <span>Checking session…</span>
+          </div>
+        ) : auth === "in" ? (
           <div className="panel">
             <div className="status is-ready" role="status">
               <span className="dot" />
@@ -98,7 +108,7 @@ export default function App() {
             </button>
           </div>
         ) : (
-          <Login onAuthenticated={() => setAuthed(true)} />
+          <Login onAuthenticated={() => setAuth("in")} />
         )}
 
         <footer className="meta">
@@ -106,7 +116,7 @@ export default function App() {
           <span aria-hidden="true">·</span>
           <span>React + Vite</span>
           <span aria-hidden="true">·</span>
-          <span>Phase 7 · #89</span>
+          <span>Phase 7 · #90</span>
         </footer>
       </section>
     </main>

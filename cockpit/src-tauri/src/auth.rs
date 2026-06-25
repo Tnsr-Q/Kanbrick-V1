@@ -10,8 +10,9 @@
 //! Durable, cross-*restart* secure custody (OS keychain vs IOTA Stronghold) is the
 //! P8.2 / ADR-0009 one-way door and is intentionally NOT decided here. [`Session`]
 //! is the seam: a future durable backing implements the same set/clear/token API.
-//! P7.4 (ADR-0016) builds on [`Session::token`] to attach the Bearer on every IPC
-//! command, host-authoritatively.
+//! P7.4 (#90, ADR-0016) adds the **IPC auth bridge** ([`authed_get`]): every
+//! authenticated host→sidecar call attaches the Bearer from [`Session`], never from
+//! a webview argument, so identity stays host-authoritative across the IPC boundary.
 
 use std::sync::Mutex;
 
@@ -101,11 +102,64 @@ pub fn logout(session: tauri::State<'_, Session>) {
     session.clear();
 }
 
-/// `invoke('session_status')` — whether a token is currently held host-side.
+/// `invoke('session_status')` — whether a token is currently held host-side
+/// (cheap, in-memory; does not validate it). Use `session_refresh` to validate.
 #[tauri::command]
 pub fn session_status(session: tauri::State<'_, Session>) -> SessionState {
     SessionState {
         authenticated: session.is_authenticated(),
+    }
+}
+
+// ── IPC auth bridge (P7.4 / ADR-0016) ───────────────────────────────────────
+
+/// The single authenticated host→sidecar call path.
+///
+/// Attaches the Bearer token from [`Session`] — **never** from a webview argument.
+/// This is the IPC analogue of the mesh propagating `FirmContext` from the
+/// validated token (ADR-0002): the webview cannot supply or forge identity. Every
+/// future authenticated command (P7.5 `/me`, providers, loops, …) goes through
+/// this (or a sibling) rather than minting its own request.
+async fn authed_get(app: &AppHandle, path: &str) -> Result<reqwest::Response, String> {
+    let base_url = app
+        .state::<SidecarSupervisor>()
+        .base_url()
+        .ok_or_else(|| "the local API is still starting".to_string())?;
+    let token = app
+        .state::<Session>()
+        .token()
+        .ok_or_else(|| "not signed in".to_string())?;
+    reqwest::Client::new()
+        .get(format!("{base_url}{path}"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("could not reach the local API: {e}"))
+}
+
+/// `invoke('session_refresh')` — validate the held token against `GET /me`.
+///
+/// The host injects the Bearer; the webview supplies nothing. A **401** is the
+/// sidecar's authoritative verdict (ADR-0016 §4), so the session is cleared and
+/// the UI falls back to login. A non-401 server error or a transport blip is not
+/// an auth failure — the session is kept rather than spuriously signing out.
+#[tauri::command]
+pub async fn session_refresh(app: AppHandle) -> SessionState {
+    if app.state::<Session>().token().is_none() {
+        return SessionState {
+            authenticated: false,
+        };
+    }
+    match authed_get(&app, "/me").await {
+        Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
+            app.state::<Session>().clear();
+            SessionState {
+                authenticated: false,
+            }
+        }
+        _ => SessionState {
+            authenticated: true,
+        },
     }
 }
 

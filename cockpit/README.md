@@ -12,13 +12,15 @@ This directory is its **own build graph** — it is in the repo-root `Cargo.toml
 Tauri's large dependency tree never enters the firm-OS workspace and
 `cargo build --workspace` is unaffected.
 
-## What's here (P7.1 #87 · P7.2 #88 · P7.3 #89)
+## What's here (P7.1 #87 · P7.2 #88 · P7.3 #89 · P7.4 #90)
 
-The shell window (P7.1), the **managed `kanbrick-api` sidecar** (P7.2), and
-**login + JWT custody** (P7.3). On launch the host spawns the API on an ephemeral
-localhost port, health-gates it, and publishes the base URL; the splash then shows
-a login form. `login` forwards to the sidecar `POST /login` and holds the JWT
-**host-side, in memory** — the webview only ever learns `authenticated: bool`.
+The shell window (P7.1), the **managed `kanbrick-api` sidecar** (P7.2), **login +
+JWT custody** (P7.3), and the **IPC auth bridge** (P7.4 / ADR-0016). On launch the
+host spawns the API on an ephemeral localhost port, health-gates it, and publishes
+the base URL; the splash then shows a login form. `login` forwards to the sidecar
+`POST /login` and holds the JWT **host-side, in memory**; every authenticated
+host→sidecar call attaches that token as Bearer — the webview only ever learns
+`authenticated: bool` and can never supply identity.
 
 ```
 cockpit/
@@ -32,7 +34,7 @@ cockpit/
     ├── Cargo.toml, tauri.conf.json, build.rs
     ├── src/main.rs, src/lib.rs  # builder + run-event teardown
     ├── src/sidecar.rs           # spawn → /health gate → status events → kill
-    ├── src/auth.rs              # login/logout + host-side Session (JWT custody)
+    ├── src/auth.rs              # Session (JWT custody) + IPC auth bridge (ADR-0016)
     ├── capabilities/default.json
     ├── binaries/                # kanbrick-api-<triple> (gitignored; staged at build)
     └── icons/                   # bundle icons (PNG)
@@ -50,6 +52,23 @@ process outlives a webview reload, the session survives a reload (the UI just
 re-queries `session_status`). Durable, cross-**restart** secure storage (OS
 keychain vs IOTA Stronghold) is deliberately deferred to **P8.2 / ADR-0009**;
 `Session` is the seam a durable backing slots into without changing callers.
+
+### IPC auth contract (P7.4 / ADR-0016)
+
+Identity stays **host-authoritative across the Tauri IPC boundary**, mirroring
+ADR-0002 across the network:
+
+- No webview→host command takes a `token`/`user`/`clearance`/`firm` argument; the
+  webview can only "act as the signed-in user".
+- Every authenticated host→sidecar call goes through one bridge (`auth::authed_get`)
+  that injects `Authorization: Bearer <Session token>` — never a webview value.
+- The **sidecar is the authority**: the host forwards the token and lets
+  `kanbrick-api` (`require_clearance`) validate it and rehydrate `FirmContext`. A
+  401 clears the session; the UI falls back to login.
+- `session_refresh` round-trips `GET /me` so "authenticated" means the token
+  actually validates (catches the 8 h TTL on a reload), not merely "present".
+
+Full rationale: [`docs/adr/0016-cockpit-ipc-auth-contract.md`](../docs/adr/0016-cockpit-ipc-auth-contract.md).
 
 ## Prerequisites
 
@@ -94,9 +113,10 @@ Pending a Tauri-capable machine / the P7.6 CI job (#92):
   `src-tauri/src/auth.rs` (`Session` set/clear/token) run under the cockpit crate's
   own `cargo test` — they need Tauri's deps to compile the crate, so they run in a
   Tauri-capable env, not this one.
-- ⏳ End-to-end spawn → `/health` 200 → window-close teardown (#88) and login →
-  reload → still-authenticated → logout (#89, seed a user via
-  `kanbrick-cli set-password`) — exercised by P7.6 (#92).
+- ⏳ End-to-end spawn → `/health` 200 → window-close teardown (#88); login →
+  reload → token re-validated against `/me` → still-authenticated → logout
+  (#89/#90, seed a user via `kanbrick-cli set-password`); expired-token → 401 →
+  session cleared (#90) — exercised by P7.6 (#92).
 
 Cross-platform icons (`.ico`/`.icns`) can be regenerated from a single source
 with `npm run tauri icon path/to/icon.png`; the committed PNGs cover the Linux
@@ -104,5 +124,5 @@ host triple.
 
 ## Next slices (Phase 7 · #78)
 
-Done: P7.1 scaffold (#87) · P7.2 sidecar (#88) · P7.3 login + JWT custody (#89).
-Next: P7.4 IPC auth bridge (ADR-0016) · P7.5 `/me` panel · P7.6 CI e2e.
+Done: P7.1 scaffold (#87) · P7.2 sidecar (#88) · P7.3 login + JWT custody (#89) ·
+P7.4 IPC auth bridge / ADR-0016 (#90). Next: P7.5 `/me` panel · P7.6 CI e2e.

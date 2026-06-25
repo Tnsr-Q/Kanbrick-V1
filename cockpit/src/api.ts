@@ -23,6 +23,14 @@ export const onSidecarStatus = (
 export const getSessionStatus = (): Promise<SessionState> =>
   invoke<SessionState>("session_status");
 
+/**
+ * Validate the held token against `GET /me` through the host auth bridge
+ * (P7.4 / ADR-0016). Unlike `getSessionStatus`, this detects an expired token —
+ * a 401 clears the host session. Use this on startup / after a reload.
+ */
+export const sessionRefresh = (): Promise<SessionState> =>
+  invoke<SessionState>("session_refresh");
+
 export const login = (email: string, password: string): Promise<void> =>
   invoke<void>("login", { email, password });
 
