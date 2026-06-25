@@ -1,0 +1,41 @@
+# Kanbrick L5 "Cockpit" — Tauri v2 host shell (P7.1, issue #87).
+#
+# This crate is its OWN build graph. It is listed in the repo-root `Cargo.toml`
+# `exclude` set (the same discipline ADR-0002 applies to the vendored upstreams
+# and the wasm-only guests), and it carries an empty `[workspace]` table below so
+# `cargo`/`tauri` inside `cockpit/src-tauri/` always resolve standalone — never
+# pulling Tauri's heavy dep tree into the firm-OS workspace, and never letting an
+# accidental `--workspace` build reach it. It therefore does NOT inherit the
+# workspace's `*.workspace = true` keys.
+[workspace]
+
+[package]
+name = "kanbrick-cockpit"
+version = "0.1.0"
+description = "Kanbrick L5 Cockpit — agentic desktop shell on the Firm OS spine"
+authors = ["Kanbrick-V1 contributors"]
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Tnsr-Q/Kanbrick-V1"
+
+[lib]
+# The desktop entry point lives in the lib so the same `run()` can back a future
+# mobile target; `main.rs` is a thin shim. Matches the Tauri v2 template layout.
+name = "kanbrick_cockpit_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Talks to the localhost sidecar only (plain HTTP) — no TLS backend pulled in.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+[features]
+# Used by `tauri build` for production bundles; DO NOT REMOVE.
+custom-protocol = ["tauri/custom-protocol"]

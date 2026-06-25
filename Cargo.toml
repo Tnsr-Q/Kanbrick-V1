@@ -28,6 +28,10 @@ members = [
 # reference guest) are wasm32-wasip1-only: they are compiled to WASM by
 # kanbrick-mesh's build script, never for the host target, so they are excluded
 # from the workspace build graph.
+# `cockpit/src-tauri` is the L5 "Cockpit" Tauri v2 desktop (Phase 7, #87). It is
+# its own build graph with Tauri's large dependency tree; it bundles the
+# kanbrick-api binary as a sidecar rather than linking the spine, so it is
+# excluded here exactly like the vendored upstreams.
 exclude = [
     "crates/sparrowdb",
     "crates/sparrowdb-ontology",
@@ -35,6 +39,7 @@ exclude = [
     "crates/tachyon-mesh",
     "guests/echo",
     "guests/sdk-example",
+    "cockpit/src-tauri",
 ]
 
 [workspace.package]
