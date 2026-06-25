@@ -8,6 +8,10 @@ dist-ssr
 src-tauri/target
 src-tauri/gen/schemas
 
+# Bundled sidecar binary — built per host triple by scripts/prepare-sidecar.sh,
+# never committed (large, platform-specific build artifact).
+src-tauri/binaries/
+
 # Lockfiles are (re)generated on first install/build in a Tauri-capable env;
 # they are intentionally not committed for the P7.1 scaffold (no network in CI
 # here resolves them). The first `npm install` / `tauri build` produces them.

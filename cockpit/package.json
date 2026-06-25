@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "sidecar": "bash scripts/prepare-sidecar.sh",
     "tauri": "tauri"
   },
   "dependencies": {

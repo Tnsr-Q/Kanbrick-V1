@@ -12,22 +12,32 @@ This directory is its **own build graph** — it is in the repo-root `Cargo.toml
 Tauri's large dependency tree never enters the firm-OS workspace and
 `cargo build --workspace` is unaffected.
 
-## What's here (P7.1 · #87)
+## What's here (P7.1 #87 · P7.2 #88)
 
-The empty shell only: one window rendering a static React splash. No IPC, no
-identity, no API call yet — those arrive in the following slices.
+The shell window (P7.1) plus the **managed `kanbrick-api` sidecar** (P7.2): on
+launch the host spawns the API binary on an ephemeral localhost port, polls
+`GET /health` until green, publishes the base URL to the webview, and kills the
+child on exit. The splash reflects live sidecar state (starting → ready / failed).
+No identity yet — login/JWT custody (P7.3) and the IPC auth bridge (P7.4) come next.
 
 ```
 cockpit/
 ├── package.json, vite.config.ts, index.html, tsconfig*.json
-├── src/                     # React + Vite webview
-│   ├── main.tsx, App.tsx, App.css
-└── src-tauri/               # Tauri v2 host (excluded from the cargo workspace)
+├── scripts/prepare-sidecar.sh   # builds + stages kanbrick-api as the sidecar
+├── src/                         # React + Vite webview
+│   ├── main.tsx, App.tsx, App.css   # status-aware health splash
+└── src-tauri/                   # Tauri v2 host (excluded from the cargo workspace)
     ├── Cargo.toml, tauri.conf.json, build.rs
-    ├── src/{main,lib}.rs    # `run()` builds the window; no commands yet
+    ├── src/main.rs, src/lib.rs  # builder + run-event teardown
+    ├── src/sidecar.rs           # spawn → /health gate → status events → kill
     ├── capabilities/default.json
-    └── icons/               # bundle icons (PNG)
+    ├── binaries/                # kanbrick-api-<triple> (gitignored; staged at build)
+    └── icons/                   # bundle icons (PNG)
 ```
+
+The sidecar binary is **not committed** (large, per-triple build artifact). It is
+built and staged into `src-tauri/binaries/` by `scripts/prepare-sidecar.sh`, which
+runs automatically from `beforeDevCommand`/`beforeBuildCommand`.
 
 ## Prerequisites
 
@@ -42,12 +52,15 @@ cockpit/
 ```bash
 cd cockpit
 npm install              # generates package-lock.json (not committed at P7.1)
-npm run tauri dev        # vite dev server + Tauri window
+npm run sidecar          # build + stage kanbrick-api (auto-run by dev/build too)
+npm run tauri dev        # vite dev server + Tauri window + supervised sidecar
 npm run tauri build      # bundle for the host triple
 ```
 
-`npm run tauri dev` starts Vite on `:1420` and opens the desktop window;
-`npm run tauri build` produces a bundle for the host triple.
+`npm run tauri dev` starts Vite on `:1420`, opens the desktop window, and spawns
+the `kanbrick-api` sidecar; the splash flips to **API ready** once `GET /health`
+returns 200. `npm run sidecar` is invoked automatically by `beforeDevCommand`/
+`beforeBuildCommand`, so the binary is always staged before a run.
 
 ## Verification status of this commit
 
@@ -65,6 +78,12 @@ Pending a Tauri-capable machine / the P7.6 CI job (#92):
 
 - ⏳ `npm run tauri dev` renders the splash in a window.
 - ⏳ `npm run tauri build` produces a bundle for the host triple.
+- ⏳ The sidecar health-probe tests in `src-tauri/src/sidecar.rs` (pure-std logic:
+  passes on a 200 stub, fails on non-200 / a closed port) run under the cockpit
+  crate's own `cargo test` — they need Tauri's deps to compile the crate, so they
+  run in a Tauri-capable env, not this one.
+- ⏳ End-to-end spawn → `/health` 200 → window-close teardown (the #88 integration
+  criterion) — exercised by P7.6 (#92) once a sidecar binary is staged.
 
 Cross-platform icons (`.ico`/`.icns`) can be regenerated from a single source
 with `npm run tauri icon path/to/icon.png`; the committed PNGs cover the Linux
@@ -72,5 +91,5 @@ host triple.
 
 ## Next slices (Phase 7 · #78)
 
-P7.2 sidecar (`kanbrick-api` spawn → `/health` → teardown) · P7.3 login + JWT
-custody · P7.4 IPC auth bridge (ADR-0016) · P7.5 `/me` panel · P7.6 CI e2e.
+Done: P7.1 scaffold (#87) · P7.2 sidecar (#88). Next: P7.3 login + JWT custody ·
+P7.4 IPC auth bridge (ADR-0016) · P7.5 `/me` panel · P7.6 CI e2e.
