@@ -33,6 +33,8 @@ tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Talks to the localhost sidecar only (plain HTTP) — no TLS backend pulled in.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
 [features]
 # Used by `tauri build` for production bundles; DO NOT REMOVE.

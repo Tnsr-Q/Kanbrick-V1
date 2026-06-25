@@ -70,6 +70,15 @@ impl SidecarSupervisor {
         self.status.lock().expect("sidecar status lock").clone()
     }
 
+    /// The sidecar base URL once healthy (`http://127.0.0.1:<port>`), else `None`.
+    /// Read by the auth bridge (P7.3+) to address the local API.
+    pub fn base_url(&self) -> Option<String> {
+        match &*self.status.lock().expect("sidecar status lock") {
+            SidecarStatus::Ready { base_url } => Some(base_url.clone()),
+            _ => None,
+        }
+    }
+
     /// Kill the sidecar if it is running. Idempotent — safe to call on every
     /// exit event, and after a failed start.
     pub fn shutdown(&self) {

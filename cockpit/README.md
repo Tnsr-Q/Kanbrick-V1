@@ -12,24 +12,27 @@ This directory is its **own build graph** — it is in the repo-root `Cargo.toml
 Tauri's large dependency tree never enters the firm-OS workspace and
 `cargo build --workspace` is unaffected.
 
-## What's here (P7.1 #87 · P7.2 #88)
+## What's here (P7.1 #87 · P7.2 #88 · P7.3 #89)
 
-The shell window (P7.1) plus the **managed `kanbrick-api` sidecar** (P7.2): on
-launch the host spawns the API binary on an ephemeral localhost port, polls
-`GET /health` until green, publishes the base URL to the webview, and kills the
-child on exit. The splash reflects live sidecar state (starting → ready / failed).
-No identity yet — login/JWT custody (P7.3) and the IPC auth bridge (P7.4) come next.
+The shell window (P7.1), the **managed `kanbrick-api` sidecar** (P7.2), and
+**login + JWT custody** (P7.3). On launch the host spawns the API on an ephemeral
+localhost port, health-gates it, and publishes the base URL; the splash then shows
+a login form. `login` forwards to the sidecar `POST /login` and holds the JWT
+**host-side, in memory** — the webview only ever learns `authenticated: bool`.
 
 ```
 cockpit/
 ├── package.json, vite.config.ts, index.html, tsconfig*.json
 ├── scripts/prepare-sidecar.sh   # builds + stages kanbrick-api as the sidecar
 ├── src/                         # React + Vite webview
-│   ├── main.tsx, App.tsx, App.css   # status-aware health splash
+│   ├── main.tsx, App.tsx, App.css   # orchestrator: sidecar × auth state
+│   ├── api.ts                   # typed Tauri IPC wrappers
+│   └── Login.tsx                # login form (token never reaches the webview)
 └── src-tauri/                   # Tauri v2 host (excluded from the cargo workspace)
     ├── Cargo.toml, tauri.conf.json, build.rs
     ├── src/main.rs, src/lib.rs  # builder + run-event teardown
     ├── src/sidecar.rs           # spawn → /health gate → status events → kill
+    ├── src/auth.rs              # login/logout + host-side Session (JWT custody)
     ├── capabilities/default.json
     ├── binaries/                # kanbrick-api-<triple> (gitignored; staged at build)
     └── icons/                   # bundle icons (PNG)
@@ -38,6 +41,15 @@ cockpit/
 The sidecar binary is **not committed** (large, per-triple build artifact). It is
 built and staged into `src-tauri/binaries/` by `scripts/prepare-sidecar.sh`, which
 runs automatically from `beforeDevCommand`/`beforeBuildCommand`.
+
+### JWT custody (P7.3)
+
+The session JWT lives **host-side, in memory** (`auth::Session`) — never in
+`localStorage`, never in logs, never returned to the webview. Because the host
+process outlives a webview reload, the session survives a reload (the UI just
+re-queries `session_status`). Durable, cross-**restart** secure storage (OS
+keychain vs IOTA Stronghold) is deliberately deferred to **P8.2 / ADR-0009**;
+`Session` is the seam a durable backing slots into without changing callers.
 
 ## Prerequisites
 
@@ -78,12 +90,13 @@ Pending a Tauri-capable machine / the P7.6 CI job (#92):
 
 - ⏳ `npm run tauri dev` renders the splash in a window.
 - ⏳ `npm run tauri build` produces a bundle for the host triple.
-- ⏳ The sidecar health-probe tests in `src-tauri/src/sidecar.rs` (pure-std logic:
-  passes on a 200 stub, fails on non-200 / a closed port) run under the cockpit
-  crate's own `cargo test` — they need Tauri's deps to compile the crate, so they
-  run in a Tauri-capable env, not this one.
-- ⏳ End-to-end spawn → `/health` 200 → window-close teardown (the #88 integration
-  criterion) — exercised by P7.6 (#92) once a sidecar binary is staged.
+- ⏳ The pure-std unit tests in `src-tauri/src/sidecar.rs` (health probe) and
+  `src-tauri/src/auth.rs` (`Session` set/clear/token) run under the cockpit crate's
+  own `cargo test` — they need Tauri's deps to compile the crate, so they run in a
+  Tauri-capable env, not this one.
+- ⏳ End-to-end spawn → `/health` 200 → window-close teardown (#88) and login →
+  reload → still-authenticated → logout (#89, seed a user via
+  `kanbrick-cli set-password`) — exercised by P7.6 (#92).
 
 Cross-platform icons (`.ico`/`.icns`) can be regenerated from a single source
 with `npm run tauri icon path/to/icon.png`; the committed PNGs cover the Linux
@@ -91,5 +104,5 @@ host triple.
 
 ## Next slices (Phase 7 · #78)
 
-Done: P7.1 scaffold (#87) · P7.2 sidecar (#88). Next: P7.3 login + JWT custody ·
-P7.4 IPC auth bridge (ADR-0016) · P7.5 `/me` panel · P7.6 CI e2e.
+Done: P7.1 scaffold (#87) · P7.2 sidecar (#88) · P7.3 login + JWT custody (#89).
+Next: P7.4 IPC auth bridge (ADR-0016) · P7.5 `/me` panel · P7.6 CI e2e.
