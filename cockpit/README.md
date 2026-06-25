@@ -12,15 +12,18 @@ This directory is its **own build graph** — it is in the repo-root `Cargo.toml
 Tauri's large dependency tree never enters the firm-OS workspace and
 `cargo build --workspace` is unaffected.
 
-## What's here (P7.1 #87 · P7.2 #88 · P7.3 #89 · P7.4 #90)
+## What's here (P7.1 #87 · P7.2 #88 · P7.3 #89 · P7.4 #90 · P7.5 #91)
 
 The shell window (P7.1), the **managed `kanbrick-api` sidecar** (P7.2), **login +
-JWT custody** (P7.3), and the **IPC auth bridge** (P7.4 / ADR-0016). On launch the
-host spawns the API on an ephemeral localhost port, health-gates it, and publishes
-the base URL; the splash then shows a login form. `login` forwards to the sidecar
-`POST /login` and holds the JWT **host-side, in memory**; every authenticated
-host→sidecar call attaches that token as Bearer — the webview only ever learns
-`authenticated: bool` and can never supply identity.
+JWT custody** (P7.3), the **IPC auth bridge** (P7.4 / ADR-0016), and the **`/me`
+identity panel** (P7.5). On launch the host spawns the API on an ephemeral
+localhost port, health-gates it, and publishes the base URL; the splash then shows
+a login form. `login` forwards to the sidecar `POST /login` and holds the JWT
+**host-side, in memory**; every authenticated host→sidecar call attaches that token
+as Bearer — the webview only ever learns `authenticated: bool` and the identity the
+host fetches for it, and can never supply identity. Once signed in, the panel renders
+the caller's email, clearance badge (L1–L5), and roles from `GET /me` — the visible
+proof of the thin end-to-end path.
 
 ```
 cockpit/
@@ -29,7 +32,8 @@ cockpit/
 ├── src/                         # React + Vite webview
 │   ├── main.tsx, App.tsx, App.css   # orchestrator: sidecar × auth state
 │   ├── api.ts                   # typed Tauri IPC wrappers
-│   └── Login.tsx                # login form (token never reaches the webview)
+│   ├── Login.tsx                # login form (token never reaches the webview)
+│   └── Me.tsx                   # /me identity panel (email · clearance · roles)
 └── src-tauri/                   # Tauri v2 host (excluded from the cargo workspace)
     ├── Cargo.toml, tauri.conf.json, build.rs
     ├── src/main.rs, src/lib.rs  # builder + run-event teardown
@@ -125,4 +129,5 @@ host triple.
 ## Next slices (Phase 7 · #78)
 
 Done: P7.1 scaffold (#87) · P7.2 sidecar (#88) · P7.3 login + JWT custody (#89) ·
-P7.4 IPC auth bridge / ADR-0016 (#90). Next: P7.5 `/me` panel · P7.6 CI e2e.
+P7.4 IPC auth bridge / ADR-0016 (#90) · P7.5 `/me` panel (#91). Next: P7.6 CI e2e
+(#92) — the headless build + login→/me smoke test that exercises the ⏳ items above.

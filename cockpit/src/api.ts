@@ -31,6 +31,12 @@ export const getSessionStatus = (): Promise<SessionState> =>
 export const sessionRefresh = (): Promise<SessionState> =>
   invoke<SessionState>("session_refresh");
 
+/** The signed-in user's identity (mirror of the Rust `Identity` / `MeResponse`). */
+export type Identity = { email: string; clearance: string; roles: string[] };
+
+/** `GET /me` through the host auth bridge (P7.4 / ADR-0016). */
+export const me = (): Promise<Identity> => invoke<Identity>("me");
+
 export const login = (email: string, password: string): Promise<void> =>
   invoke<void>("login", { email, password });
 

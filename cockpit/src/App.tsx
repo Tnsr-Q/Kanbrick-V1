@@ -7,6 +7,7 @@ import {
   type SidecarStatus,
 } from "./api";
 import Login from "./Login";
+import Me from "./Me";
 import "./App.css";
 
 const SIDECAR_COPY = {
@@ -97,16 +98,7 @@ export default function App() {
             <span>Checking session…</span>
           </div>
         ) : auth === "in" ? (
-          <div className="panel">
-            <div className="status is-ready" role="status">
-              <span className="dot" />
-              <span>Signed in</span>
-            </div>
-            <p className="hint">Your identity panel (/me) lands in P7.5.</p>
-            <button className="btn-secondary" onClick={signOut}>
-              Sign out
-            </button>
-          </div>
+          <Me onSignOut={signOut} />
         ) : (
           <Login onAuthenticated={() => setAuth("in")} />
         )}
@@ -116,7 +108,7 @@ export default function App() {
           <span aria-hidden="true">·</span>
           <span>React + Vite</span>
           <span aria-hidden="true">·</span>
-          <span>Phase 7 · #90</span>
+          <span>Phase 7 · #91</span>
         </footer>
       </section>
     </main>

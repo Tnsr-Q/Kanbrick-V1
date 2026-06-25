@@ -3,9 +3,8 @@
 //! P7.1 (#87) stood up the empty window. P7.2 (#88) bundles `kanbrick-api` as a
 //! managed sidecar. P7.3 (#89) adds `login`/`logout` + host-side JWT custody.
 //! P7.4 (#90, ADR-0016) adds the IPC auth bridge: authenticated calls attach the
-//! Bearer from `Session`, never from the webview. Still ahead:
-//!
-//! * P7.5 — render the live `/me` identity panel
+//! Bearer from `Session`, never from the webview. P7.5 (#91) renders the `/me`
+//! identity panel. Still ahead: P7.6 (#92) — headless CI e2e.
 //!
 //! The desktop is a *client* of the finished `HTTP → Auth → Mesh → Guest → Graph`
 //! spine — it re-implements none of it.
@@ -30,6 +29,7 @@ pub fn run() {
             auth::logout,
             auth::session_status,
             auth::session_refresh,
+            auth::me,
         ])
         .setup(|app| {
             // Spawn + health-gate the API sidecar; readiness is pushed to the

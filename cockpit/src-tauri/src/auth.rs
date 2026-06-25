@@ -163,6 +163,34 @@ pub async fn session_refresh(app: AppHandle) -> SessionState {
     }
 }
 
+/// The signed-in user's identity, mirroring `kanbrick-api`'s `MeResponse`.
+/// `clearance` is the serialized `ClearanceLevel` (`"L1"`..`"L5"`).
+#[derive(Serialize, Deserialize)]
+pub struct Identity {
+    pub email: String,
+    pub clearance: String,
+    pub roles: Vec<String>,
+}
+
+/// `invoke('me')` — the signed-in user's identity via `GET /me` through the auth
+/// bridge (ADR-0016). Identity is derived entirely from the host-held token; the
+/// webview supplies nothing. A 401 clears the session so the UI returns to login.
+#[tauri::command]
+pub async fn me(app: AppHandle) -> Result<Identity, String> {
+    let response = authed_get(&app, "/me").await?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        app.state::<Session>().clear();
+        return Err("session expired — please sign in again".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(format!("could not load identity ({})", response.status()));
+    }
+    response
+        .json::<Identity>()
+        .await
+        .map_err(|e| format!("unexpected identity response: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::Session;
