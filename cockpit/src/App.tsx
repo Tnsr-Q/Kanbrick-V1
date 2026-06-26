@@ -9,6 +9,7 @@ import {
 import Login from "./Login";
 import Me from "./Me";
 import Spikes from "./Spikes";
+import Providers from "./Providers";
 import "./App.css";
 
 const SIDECAR_COPY = {
@@ -29,7 +30,7 @@ type Auth = "unknown" | "in" | "out";
 export default function App() {
   const [sidecar, setSidecar] = useState<SidecarStatus>({ state: "starting" });
   const [auth, setAuth] = useState<Auth>("unknown");
-  const [view, setView] = useState<"main" | "spikes">("main");
+  const [view, setView] = useState<"main" | "spikes" | "providers">("main");
 
   useEffect(() => {
     let active = true;
@@ -73,6 +74,15 @@ export default function App() {
       setAuth("out");
     }
   };
+
+  // P9.4 (#104) BYO-AI streaming console — its own wider surface.
+  if (view === "providers") {
+    return (
+      <main className="splash spikes-view">
+        <Providers onBack={() => setView("main")} />
+      </main>
+    );
+  }
 
   // P8.5 (#97) frontend de-risk spike — a separate, wider surface for ADR-0011.
   if (view === "spikes") {
@@ -118,6 +128,14 @@ export default function App() {
           <span>Tauri v2</span>
           <span aria-hidden="true">·</span>
           <span>React + Vite</span>
+          {auth === "in" && (
+            <>
+              <span aria-hidden="true">·</span>
+              <button className="link-btn" onClick={() => setView("providers")}>
+                BYO-AI (P9.4)
+              </button>
+            </>
+          )}
           <span aria-hidden="true">·</span>
           <button className="link-btn" onClick={() => setView("spikes")}>
             UI spikes (P8.5)
