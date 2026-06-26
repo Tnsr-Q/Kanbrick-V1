@@ -79,6 +79,7 @@ kanbrick-auth = { path = "kanbrick-auth", version = "0.1.0" }
 kanbrick-mesh = { path = "kanbrick-mesh", version = "0.1.0" }
 kanbrick-discovery = { path = "kanbrick-discovery", version = "0.1.0" }
 kanbrick-guest-sdk = { path = "kanbrick-guest-sdk", version = "0.1.0" }
+kanbrick-providers = { path = "kanbrick-providers", version = "0.1.0" }
 
 # Async runtime & web
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

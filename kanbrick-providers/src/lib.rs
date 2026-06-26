@@ -36,10 +36,17 @@
 //! - [`anthropic`] — the Claude Messages-API adapter (disjoint usage).
 //! - [`openai`] — the OpenAI / Cerebras Chat-Completions adapter (inclusive usage
 //!   → [`Usage::from_inclusive`]).
+//! - [`custody`] — per-employee provider-key custody (P9.3): the
+//!   [`ProviderKeyStore`](custody::ProviderKeyStore) trait + an in-memory backend,
+//!   namespaced by `user_id`. The Stronghold / keychain backends (ADR-0009) live
+//!   on the cockpit side; this crate carries no native dependency.
 
 pub mod anthropic;
+pub mod custody;
 pub mod openai;
 pub mod wire;
+
+pub use custody::{InMemoryKeyStore, KeyId, KeyMetadata, KeyStoreError, ProviderKeyStore};
 
 #[cfg(test)]
 mod test_support;

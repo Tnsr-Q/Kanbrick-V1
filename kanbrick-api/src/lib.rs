@@ -17,6 +17,8 @@
 //!   content-addressed registry (#64).
 //! * `POST /admin/guests/{name}/activate` — L5: bind a guest to a stored artifact
 //!   and hot-reload it (#64).
+//! * `POST/GET/DELETE /me/provider-keys` — per-employee BYO-AI provider-key
+//!   custody, clearance-gated + audited, with metadata-only reads (#103).
 //!
 //! The three business guests are **embedded** in the binary at build time
 //! (`include_bytes!`), so a single self-contained binary serves them (#53). The
@@ -36,12 +38,13 @@ use axum::extract::{FromRequestParts, Path, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use kanbrick_auth::{require_clearance, AuditLog, JwtAuthenticator, LoginService};
 use kanbrick_core::abi::GuestRequest;
 use kanbrick_core::{ClearanceLevel, Error, ErrorKind, FirmContext};
 use kanbrick_mesh::{AssetError, AssetStore, EventBus, MeshError, MeshRuntime};
+use kanbrick_providers::{InMemoryKeyStore, ProviderKeyStore};
 use kanbrick_store::{
     bump_registry_generation, list_guest_policies, read_guest_policy, write_guest_policy,
     GuestPolicy, Store, SOURCE_EMBEDDED, SOURCE_REGISTRY,
@@ -55,6 +58,7 @@ mod executor;
 mod http_client;
 mod internal;
 mod metrics;
+mod provider_keys;
 
 pub use admission::{AdmissionConfig, GuestAdmission};
 pub use caps::InvocationCaps;
@@ -169,6 +173,10 @@ pub struct AppState {
     /// Forwarder to the executor pool (#70). `Some` means guest invocations are
     /// proxied to executors; `None` means they run in-process on this node.
     pub executor: Option<Arc<ExecutorClient>>,
+    /// Per-employee provider-key custody (P9.3, #103), namespaced by `user_id`.
+    /// Defaults to an in-memory store; the cockpit injects the Stronghold-backed
+    /// backend (ADR-0009) via [`with_provider_keys`](AppState::with_provider_keys).
+    pub provider_keys: Arc<dyn ProviderKeyStore>,
 }
 
 impl AppState {
@@ -220,7 +228,16 @@ impl AppState {
             caps: Arc::new(InvocationCaps::new()),
             internal_token,
             executor,
+            provider_keys: Arc::new(InMemoryKeyStore::new()),
         })
+    }
+
+    /// Replace the provider-key custody backend. The cockpit injects the
+    /// Stronghold-backed store here (ADR-0009); a builder, so existing call sites
+    /// are unchanged and default to the in-memory store.
+    pub fn with_provider_keys(mut self, provider_keys: Arc<dyn ProviderKeyStore>) -> Self {
+        self.provider_keys = provider_keys;
+        self
     }
 }
 
@@ -297,6 +314,11 @@ pub fn router(state: AppState) -> Router {
         .route("/guests/{name}", post(invoke_guest))
         .route("/admin/assets/guests", post(upload_asset))
         .route("/admin/guests/{name}/activate", post(activate_guest))
+        .route(
+            "/me/provider-keys",
+            post(provider_keys::create_key).get(provider_keys::list_keys),
+        )
+        .route("/me/provider-keys/{id}", delete(provider_keys::delete_key))
         .with_state(state)
 }
 
