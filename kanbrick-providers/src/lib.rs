@@ -27,6 +27,22 @@
 //!   double-count — that invariant is the contract this crate exists to pin (see
 //!   [`Usage::from_inclusive`] for the OpenAI mapping that would otherwise
 //!   double-count).
+//!
+//! ## Modules
+//!
+//! - [`wire`] — the HTTP transport seam (`HttpTransport`) the P9.2 adapters call,
+//!   plus shared SSE / status-mapping helpers. No live transport ships here: the
+//!   real `reqwest` client lands in P9.6 behind the ADR-0017 egress gate.
+//! - [`anthropic`] — the Claude Messages-API adapter (disjoint usage).
+//! - [`openai`] — the OpenAI / Cerebras Chat-Completions adapter (inclusive usage
+//!   → [`Usage::from_inclusive`]).
+
+pub mod anthropic;
+pub mod openai;
+pub mod wire;
+
+#[cfg(test)]
+mod test_support;
 
 use serde::{Deserialize, Serialize};
 

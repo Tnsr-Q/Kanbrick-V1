@@ -67,7 +67,7 @@ behind a Phase-8 probe:
 |---|---|---|---|
 | P7 — Cockpit Shell | [#78](https://github.com/Tnsr-Q/Kanbrick-V1/issues/78) | 2 | **built + CI-gated** (#87–#92) |
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
-| P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **slices filed** (#101–#106) |
+| P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1 merged · P9.2 wire adapters built** (#101–#106) |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | slices enumerated in epic |
 | P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | slices enumerated in epic |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
@@ -91,6 +91,15 @@ Two throwaway spikes are built + tested (std-only, excluded from the workspace):
 Honest env note: the upstream submodule clone + the Stronghold round-trip are network-gated
 (agent-proxy 403 / blocked tarball downloads) and reproduce on a network-capable machine / CI
 — the Stronghold *dependency-closure* evidence (179 crates, no `core-host`) was captured here.
+
+**P9 in flight (2026-06-26):** P9.1 (`kanbrick-providers` — `ChatProvider` trait + disjoint
+`Usage`) merged via #107. P9.2 adds the **wire adapters** as pure codecs over an injected
+`HttpTransport` seam (`wire.rs`): `anthropic.rs` (Claude Messages API — disjoint usage, struct-literal
+map) and `openai.rs` (OpenAI **and** Cerebras Chat-Completions — *inclusive* usage via
+`Usage::from_inclusive`, the double-count guard). No live `reqwest` ships here: ADR-0017 forbids core
+egress until the **P9.6** allowlist+DLP gate exists, so the adapters carry no HTTP/TLS/async stack and
+are fixture-tested with zero network (`RecordedTransport`). The real TLS transport wraps
+`kanbrick-api::http_client` in P9.6.
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator
