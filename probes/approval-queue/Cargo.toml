@@ -1,0 +1,19 @@
+# P8.7 (#99) throwaway de-risk probe — central approval queue that serializes
+# concurrent cross-user approvals through a single writer (preserving ADR-0008's
+# single-writer invariant). Its own workspace + excluded from the root graph,
+# like `cockpit/src-tauri`. Dependency-free (std only: threads + mpsc) so it runs
+# anywhere; see `docs/adr/0015-tenancy-topology.md`.
+[package]
+name = "kanbrick-probe-approval-queue"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+# Detach from the root workspace — standalone throwaway probe.
+[workspace]

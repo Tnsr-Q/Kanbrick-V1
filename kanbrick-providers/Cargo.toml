@@ -1,0 +1,16 @@
+[package]
+name = "kanbrick-providers"
+description = "Host-side BYO-AI abstraction: one ChatProvider trait over cloud LLM providers + normalized token Usage (L5 Cockpit, Phase 9)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Trait + normalized types only (P9.1). Wire adapters (reqwest/SSE) and egress
+# land in P9.2 / P9.6 — this crate deliberately pulls no HTTP/async stack so the
+# trait stays runtime-agnostic and object-safe.
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true

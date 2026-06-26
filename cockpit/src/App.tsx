@@ -8,6 +8,7 @@ import {
 } from "./api";
 import Login from "./Login";
 import Me from "./Me";
+import Spikes from "./Spikes";
 import "./App.css";
 
 const SIDECAR_COPY = {
@@ -28,6 +29,7 @@ type Auth = "unknown" | "in" | "out";
 export default function App() {
   const [sidecar, setSidecar] = useState<SidecarStatus>({ state: "starting" });
   const [auth, setAuth] = useState<Auth>("unknown");
+  const [view, setView] = useState<"main" | "spikes">("main");
 
   useEffect(() => {
     let active = true;
@@ -72,6 +74,15 @@ export default function App() {
     }
   };
 
+  // P8.5 (#97) frontend de-risk spike — a separate, wider surface for ADR-0011.
+  if (view === "spikes") {
+    return (
+      <main className="splash spikes-view">
+        <Spikes onBack={() => setView("main")} />
+      </main>
+    );
+  }
+
   return (
     <main className="splash">
       <div className="glow" aria-hidden="true" />
@@ -108,7 +119,9 @@ export default function App() {
           <span aria-hidden="true">·</span>
           <span>React + Vite</span>
           <span aria-hidden="true">·</span>
-          <span>Phase 7 · #91</span>
+          <button className="link-btn" onClick={() => setView("spikes")}>
+            UI spikes (P8.5)
+          </button>
         </footer>
       </section>
     </main>

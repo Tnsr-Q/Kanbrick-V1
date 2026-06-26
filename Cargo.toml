@@ -19,6 +19,7 @@ members = [
     "kanbrick-guest-sdk",    # Typed host-ABI bindings for WASM guests (#39)
     "kanbrick-api",          # HTTP API surface
     "kanbrick-cli",          # CLI tooling (seed loader, admin)
+    "kanbrick-providers",    # BYO-AI provider abstraction (L5 — Cockpit, Phase 9)
     "guests/valuation",      # WASM guest — valuation models (Phase 5)
     "guests/reporting",      # WASM guest — report generation (Phase 5)
     "guests/compliance",     # WASM guest — compliance checks (Phase 5)
@@ -32,6 +33,10 @@ members = [
 # its own build graph with Tauri's large dependency tree; it bundles the
 # kanbrick-api binary as a sidecar rather than linking the spine, so it is
 # excluded here exactly like the vendored upstreams.
+# `probes/*` are throwaway Phase-8 de-risk spikes (#96 RBAC/DLP, #99 approval
+# queue). Each is a standalone, dependency-free crate with its own `[workspace]`;
+# they prove a one-way-door mechanism for an ADR and are kept out of the firm-OS
+# graph (and CI's `cargo build --workspace`), exactly like the cockpit.
 exclude = [
     "crates/sparrowdb",
     "crates/sparrowdb-ontology",
@@ -40,6 +45,8 @@ exclude = [
     "guests/echo",
     "guests/sdk-example",
     "cockpit/src-tauri",
+    "probes/rbac-overlay",
+    "probes/approval-queue",
 ]
 
 [workspace.package]

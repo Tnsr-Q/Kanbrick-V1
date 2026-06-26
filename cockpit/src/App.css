@@ -396,3 +396,86 @@ h1 {
     animation: none;
   }
 }
+
+/* ── UI surface spikes (P8.5 / ADR-0011) ──────────────────────────────── */
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--indigo);
+  cursor: pointer;
+}
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.spikes-view {
+  place-items: start center;
+  overflow: auto;
+}
+
+.spikes {
+  width: min(720px, 92vw);
+  margin: 40px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.spikes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.spikes-head h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.spikes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 4px;
+}
+
+.spike-card {
+  margin: 0;
+  padding: 16px;
+  border-radius: 14px;
+  background: rgba(13, 18, 36, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spike-card figcaption {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 550;
+}
+
+.spike-svg,
+.spike-canvas {
+  width: 100%;
+  border-radius: 10px;
+  background: rgba(7, 10, 20, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  touch-action: none;
+}
+
+.spike-node-label {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+.spike-node:hover circle {
+  filter: brightness(1.15);
+}
