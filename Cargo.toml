@@ -19,6 +19,7 @@ members = [
     "kanbrick-guest-sdk",    # Typed host-ABI bindings for WASM guests (#39)
     "kanbrick-api",          # HTTP API surface
     "kanbrick-cli",          # CLI tooling (seed loader, admin)
+    "kanbrick-providers",    # BYO-AI provider abstraction (L5 — Cockpit, Phase 9)
     "guests/valuation",      # WASM guest — valuation models (Phase 5)
     "guests/reporting",      # WASM guest — report generation (Phase 5)
     "guests/compliance",     # WASM guest — compliance checks (Phase 5)
