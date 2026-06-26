@@ -1837,6 +1837,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanbrick-tokens"
+version = "0.1.0"
+dependencies = [
+ "kanbrick-providers",
+ "serde",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

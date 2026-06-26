@@ -1,0 +1,16 @@
+[package]
+name = "kanbrick-tokens"
+description = "Priced token ledger + budget primitives for BYO-AI usage (L5 Cockpit, Phase 9.5)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Prices and records the normalized, disjoint `Usage` produced by the provider
+# adapters (P9.1/P9.2). No HTTP/async stack — capture is a pure data concern.
+kanbrick-providers.workspace = true
+serde = { workspace = true }
+thiserror.workspace = true
+uuid.workspace = true

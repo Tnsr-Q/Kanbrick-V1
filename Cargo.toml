@@ -20,6 +20,7 @@ members = [
     "kanbrick-api",          # HTTP API surface
     "kanbrick-cli",          # CLI tooling (seed loader, admin)
     "kanbrick-providers",    # BYO-AI provider abstraction (L5 — Cockpit, Phase 9)
+    "kanbrick-tokens",       # Priced token ledger + budgets (L5 — Cockpit, Phase 9.5)
     "guests/valuation",      # WASM guest — valuation models (Phase 5)
     "guests/reporting",      # WASM guest — report generation (Phase 5)
     "guests/compliance",     # WASM guest — compliance checks (Phase 5)
@@ -80,6 +81,7 @@ kanbrick-mesh = { path = "kanbrick-mesh", version = "0.1.0" }
 kanbrick-discovery = { path = "kanbrick-discovery", version = "0.1.0" }
 kanbrick-guest-sdk = { path = "kanbrick-guest-sdk", version = "0.1.0" }
 kanbrick-providers = { path = "kanbrick-providers", version = "0.1.0" }
+kanbrick-tokens = { path = "kanbrick-tokens", version = "0.1.0" }
 
 # Async runtime & web
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
