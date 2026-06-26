@@ -1,0 +1,3 @@
+# Throwaway P8 de-risk probes — build artifacts are not tracked.
+*/target/
+*/Cargo.lock

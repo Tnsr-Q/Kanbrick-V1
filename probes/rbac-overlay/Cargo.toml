@@ -1,0 +1,22 @@
+# P8.4 (#96) throwaway de-risk probe — Ironclaw RBAC + DLP as additive-only overlays.
+#
+# Its own workspace + excluded from the root graph (root Cargo.toml `exclude`),
+# exactly like `cockpit/src-tauri` and the vendored upstreams, so it never enters
+# the firm-OS build graph. Dependency-free (std only) so it compiles and tests in
+# any environment; it MIRRORS the real `kanbrick_core::ClearanceLevel` /
+# `FirmContext.roles` shapes (see ADR-0010) to prove the mechanism, then ADR-0010
+# maps it onto the real types.
+[package]
+name = "kanbrick-probe-rbac-overlay"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+# Detach from the root workspace — this is a standalone throwaway probe.
+[workspace]
