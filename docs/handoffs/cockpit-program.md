@@ -67,7 +67,7 @@ behind a Phase-8 probe:
 |---|---|---|---|
 | P7 — Cockpit Shell | [#78](https://github.com/Tnsr-Q/Kanbrick-V1/issues/78) | 2 | **built + CI-gated** (#87–#92) |
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
-| P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1 merged · P9.2 wire adapters built** (#101–#106) |
+| P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.2 merged · P9.3 key custody built** (#101–#106) |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | slices enumerated in epic |
 | P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | slices enumerated in epic |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
@@ -100,6 +100,16 @@ map) and `openai.rs` (OpenAI **and** Cerebras Chat-Completions — *inclusive* u
 egress until the **P9.6** allowlist+DLP gate exists, so the adapters carry no HTTP/TLS/async stack and
 are fixture-tested with zero network (`RecordedTransport`). The real TLS transport wraps
 `kanbrick-api::http_client` in P9.6.
+
+P9.3 adds **per-employee key custody**: a `ProviderKeyStore` trait + `InMemoryKeyStore`
+(`kanbrick-providers::custody`, namespaced by `FirmContext.user_id`) behind new
+`POST/GET/DELETE /me/provider-keys` routes (`kanbrick-api`, `require_clearance` + `AuditLog`,
+metadata-only reads). Cross-user reads are impossible by construction (outer map keyed on
+`user_id`; routes read the host-authoritative JWT identity, never the path). Per ADR-0009 the
+durable backends — IOTA Stronghold (primary) + OS keychain (fallback) — carry a native
+`libsodium` dep and live on the **cockpit side**, injected via `AppState::with_provider_keys`;
+the live enclave round-trip is deferred to a network-capable machine / cockpit CI
+(`docs/probes/p9.3-key-custody.md`).
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator

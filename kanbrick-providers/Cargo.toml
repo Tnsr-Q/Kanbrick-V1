@@ -8,9 +8,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# Trait + normalized types only (P9.1). Wire adapters (reqwest/SSE) and egress
-# land in P9.2 / P9.6 — this crate deliberately pulls no HTTP/async stack so the
-# trait stays runtime-agnostic and object-safe.
+# Trait + normalized types (P9.1) and wire codecs (P9.2). The crate deliberately
+# pulls no HTTP/async stack: the wire adapters move bytes through an injected
+# transport seam, so the trait stays runtime-agnostic and object-safe.
 serde = { workspace = true }
 serde_json.workspace = true
 thiserror.workspace = true
+# Provider-key custody (P9.3) namespaces secrets by the JWT-derived user_id; the
+# id types are UUIDs. Already in the workspace lock — no new download.
+uuid.workspace = true
