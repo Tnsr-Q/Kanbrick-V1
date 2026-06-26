@@ -66,7 +66,7 @@ behind a Phase-8 probe:
 | Phase | Epic | Requirement | Status |
 |---|---|---|---|
 | P7 — Cockpit Shell | [#78](https://github.com/Tnsr-Q/Kanbrick-V1/issues/78) | 2 | **built + CI-gated** (#87–#92) |
-| P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | slices filed (#93–#99) |
+| P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | slices enumerated in epic |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | slices enumerated in epic |
 | P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | slices enumerated in epic |
@@ -81,6 +81,16 @@ contract (ADR-0016) · #91 `/me` panel · #92 CI e2e.
 **P8 (De-Risk):** #93 init submodules + ADR-0014 · #94 Stronghold + ADR-0009 · #95 MCP
 bridge · #96 Ironclaw RBAC/DLP + ADR-0010 · #97 frontend ADR-0011 · #98 egress ADR-0017 ·
 #99 tenancy ADR-0015.
+
+**P8 landed (2026-06-26):** all six ADRs (`docs/adr/` 0009, 0010, 0011, 0014, 0015, 0017)
++ three probe notes (`docs/probes/` p8.1 compat matrix, p8.2 Stronghold, p8.3 MCP bridge).
+Two throwaway spikes are built + tested (std-only, excluded from the workspace):
+`probes/rbac-overlay` (restrict-only RBAC + default-deny DLP, 6 tests) and
+`probes/approval-queue` (single-writer serialization, no lost update, 3 tests); plus the
+`cockpit/src/Spikes.tsx` UI surface spike (SVG graph + Canvas whiteboard) for ADR-0011.
+Honest env note: the upstream submodule clone + the Stronghold round-trip are network-gated
+(agent-proxy 403 / blocked tarball downloads) and reproduce on a network-capable machine / CI
+— the Stronghold *dependency-closure* evidence (179 crates, no `core-host`) was captured here.
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator
