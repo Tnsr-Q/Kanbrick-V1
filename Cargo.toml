@@ -21,6 +21,7 @@ members = [
     "kanbrick-cli",          # CLI tooling (seed loader, admin)
     "kanbrick-providers",    # BYO-AI provider abstraction (L5 — Cockpit, Phase 9)
     "kanbrick-tokens",       # Priced token ledger + budgets (L5 — Cockpit, Phase 9.5)
+    "kanbrick-egress",       # BYO-AI egress gate: allowlist + DLP + RBAC (L5 — Cockpit, Phase 9.6)
     "guests/valuation",      # WASM guest — valuation models (Phase 5)
     "guests/reporting",      # WASM guest — report generation (Phase 5)
     "guests/compliance",     # WASM guest — compliance checks (Phase 5)

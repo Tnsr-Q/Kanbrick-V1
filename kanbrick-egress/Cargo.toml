@@ -1,0 +1,18 @@
+[package]
+name = "kanbrick-egress"
+description = "The BYO-AI egress gate: per-tenant host allowlist + DLP + restrict-only RBAC at the kanbrick-providers send boundary (ADR-0010/0017, P9.6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The gate decorates the kanbrick-providers HttpTransport seam (no socket of its
+# own) and reads the firm's real ClearanceLevel + ProviderKind. It pulls no
+# HTTP/TLS stack: the inner transport (the real reqwest client at deploy time, or
+# the in-test stub) is injected, so this crate stays pure and offline-testable.
+kanbrick-core.workspace = true
+kanbrick-providers.workspace = true
+serde = { workspace = true }
+thiserror.workspace = true
