@@ -64,9 +64,10 @@ mod provider_keys;
 
 pub use admission::{AdmissionConfig, GuestAdmission};
 pub use caps::InvocationCaps;
+pub use components::{ComponentRegistry, RegisteredComponent};
 pub use executor::{
-    build_executor, executor_router, spawn_reconcile_loop, Executor, ExecutorClient,
-    ExecutorConfig, ExecutorError, RemoteHostServices, DEFAULT_RECONCILE_INTERVAL,
+    build_executor, executor_router, register_component, spawn_reconcile_loop, Executor,
+    ExecutorClient, ExecutorConfig, ExecutorError, RemoteHostServices, DEFAULT_RECONCILE_INTERVAL,
 };
 pub use internal::internal_router;
 
@@ -175,6 +176,9 @@ pub struct AppState {
     pub bus: EventBus,
     /// Per-invocation capability registry for the internal RPC surface (#69).
     pub caps: Arc<InvocationCaps>,
+    /// Self-registered sidecar/plugin components surfaced in the visualizer
+    /// (`/me/components`, P10.6, #118). Populated over the internal RPC surface.
+    pub components: ComponentRegistry,
     /// Shared transport secret guarding the internal RPC surface (#69); `None`
     /// disables it.
     pub internal_token: Option<Arc<str>>,
@@ -236,6 +240,7 @@ impl AppState {
             assets,
             bus,
             caps: Arc::new(InvocationCaps::new()),
+            components: ComponentRegistry::new(),
             internal_token,
             executor,
             provider_keys: Arc::new(InMemoryKeyStore::new()),

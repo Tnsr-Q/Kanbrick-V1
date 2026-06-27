@@ -68,7 +68,7 @@ behind a Phase-8 probe:
 | P7 — Cockpit Shell | [#78](https://github.com/Tnsr-Q/Kanbrick-V1/issues/78) | 2 | **built + CI-gated** (#87–#92) |
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
-| P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **slices filed #113–#119** · P10.1–P10.2, P10.4–P10.5 merged (#120–#123) · P10.3 messenger UI in flight |
+| P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **slices filed #113–#119** · P10.1–P10.5 merged (#120–#124) · P10.6 internal-RPC self-registration in flight · P10.7 (#119) remains |
 | P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | slices enumerated in epic |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
@@ -170,7 +170,14 @@ a `watch_messages` Tauri **Channel**, a lightweight **collaborative whiteboard**
 (strokes are messages scoped to a `whiteboard` group — no extra backend), notification popups on incoming
 messages, and a local task list. Identity stays host-authoritative (the new `authed_post` injects the Bearer
 host-side; the `actor` is stamped server-side, never the webview). `tsc --strict` + `vite build` green.
-**P10 complete on the backend+UI for messenger & visualizer; P10.6/P10.7 (#118/#119) remain.**
+**P10.3 merged as [#124].** **P10.6** (internal-RPC self-registration, #118) follows: the internal RPC
+surface gains `POST /internal/components/register` so a newly-added Rust sidecar/plugin self-registers a
+`{name, version, clearance}` descriptor into an in-process `ComponentRegistry` (concurrency-safe, last-write-
+wins) that the P10.4 `GET /me/components` folds in alongside the WASM guests. Registration is gated **solely**
+by the constant-time `x-kanbrick-internal-token` (fail-closed; no JWT path) — reusing the same gate as the
+graph/event callbacks — and an `executor`-side `register_component(cp_url, token, &descriptor)` helper is the
+one-shot a sidecar calls at boot. Backend-only (the `kind` discriminator + UI land in P10.7). **P10.6 in
+flight; P10.7 (#119, in-process service introspection) remains.**
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator

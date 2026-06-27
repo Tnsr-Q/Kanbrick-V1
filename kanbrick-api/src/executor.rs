@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
 use crate::admission::{AdmissionConfig, GuestAdmission};
+use crate::components::RegisteredComponent;
 use crate::http_client::{self, HttpResponse};
 use crate::internal::{ct_eq, RegistryResponse, HEADER_INTERNAL_TOKEN};
 use crate::{mesh_error, ApiError};
@@ -184,6 +185,15 @@ impl CpClient {
         let body = serde_json::to_vec(&json!({ "cap": cap, "event": event }))
             .map_err(|e| ExecutorError::Decode(e.to_string()))?;
         let resp = self.send("POST", "/internal/events", Some(&body))?;
+        ok_body(resp).map(|_| ())
+    }
+
+    /// Register a sidecar/plugin component into the control plane's visualizer
+    /// registry (P10.6, #118), authorized by the shared transport secret.
+    fn register_component(&self, component: &RegisteredComponent) -> Result<(), ExecutorError> {
+        let body =
+            serde_json::to_vec(component).map_err(|e| ExecutorError::Decode(e.to_string()))?;
+        let resp = self.send("POST", "/internal/components/register", Some(&body))?;
         ok_body(resp).map(|_| ())
     }
 }
@@ -447,6 +457,21 @@ pub fn spawn_reconcile_loop(
             }
         })
         .expect("spawn executor reconcile thread")
+}
+
+// ── Sidecar self-registration (P10.6, #118) ──────────────────────────────────
+
+/// Self-register a sidecar/plugin with the control plane's component registry so it
+/// appears in the visualizer (`GET /me/components`). A one-shot helper a sidecar
+/// calls at boot: it presents the shared transport secret to the CP's internal RPC
+/// surface (#69) — **never** a JWT — and records `component`'s descriptor. Performs
+/// one blocking HTTP POST; call it off the async runtime.
+pub fn register_component(
+    cp_url: impl Into<String>,
+    token: impl Into<String>,
+    component: &RegisteredComponent,
+) -> Result<(), ExecutorError> {
+    CpClient::new(cp_url, token, DEFAULT_REQUEST_TIMEOUT).register_component(component)
 }
 
 // ── Executor HTTP surface ────────────────────────────────────────────────────
