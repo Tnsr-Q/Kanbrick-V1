@@ -42,6 +42,23 @@ export const login = (email: string, password: string): Promise<void> =>
 
 export const logout = (): Promise<void> => invoke<void>("logout");
 
+// ── Component visualizer (P10.4, #116) ───────────────────────────────────────
+
+/** Mirror of the Rust `ComponentStatus` (kanbrick-api `GET /me/components`). */
+export type ComponentStatus = {
+  name: string;
+  version: string;
+  active: number;
+  completed: number;
+  failed: number;
+  timed_out: number;
+  clearance: string;
+};
+
+/** The live component catalogue via the host auth bridge (ADR-0016). */
+export const listComponents = (): Promise<ComponentStatus[]> =>
+  invoke<ComponentStatus[]>("list_components");
+
 // ── BYO-AI providers (P9.4, #104) ────────────────────────────────────────────
 
 /** Mirror of `kanbrick_providers::ProviderKind` (serde lowercase). */
