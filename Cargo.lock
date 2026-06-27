@@ -1754,6 +1754,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanbrick-egress"
+version = "0.1.0"
+dependencies = [
+ "kanbrick-core",
+ "kanbrick-providers",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "kanbrick-guest-compliance"
 version = "0.1.0"
 dependencies = [

@@ -78,3 +78,41 @@ spec:
           port: 8080
   # No other ingress rule ⇒ all other sources (incl. any public ingress) are
   # denied. The executor is not internet-facing.
+---
+# ADR-0017 egress backstop (P9.6, #106): the no-egress core. Core pods may reach
+# DNS and in-cluster services, but NOT the public internet — so even if the
+# app-layer DLP + allowlist gate (`kanbrick-egress`) were bypassed, a core pod
+# still could not open a socket to a provider host. BYO-AI egress is permitted
+# ONLY from the providers boundary (the per-workstation Cockpit today; a dedicated
+# providers pod in a server-side CP), which carries its own egress-allow policy to
+# the per-tenant allowlisted hosts on :443. The app-layer gate is the AUTHORITY
+# (it alone reasons about data class); this NetworkPolicy is defense-in-depth.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kanbrick-core-egress-deny
+  labels:
+    app.kubernetes.io/part-of: kanbrick
+spec:
+  # The core pods only — a future `kanbrick-providers` pod is intentionally NOT
+  # selected here and would carry its own egress-allow to the allowlisted hosts.
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [kanbrick-api, kanbrick-executor]
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution (kube-dns / CoreDNS).
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # In-cluster traffic only (CP ↔ executor ↔ embedded SparrowDB). No rule
+    # permits egress to off-cluster IPs ⇒ the public internet is denied.
+    - to:
+        - namespaceSelector: {}
