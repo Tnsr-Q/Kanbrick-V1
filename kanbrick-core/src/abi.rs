@@ -142,6 +142,82 @@ impl Event {
     }
 }
 
+// ── Messenger (Cockpit req 2.2, P10.1) ────────────────────────────────────────
+//
+// The internal messenger is a typed payload carried over the existing
+// [`Event`] bus (`kanbrick-mesh`'s `EventBus`), not a new fabric. A send emits
+// one [`Event`] of kind [`MESSENGER_EVENT_KIND`]; the replayable bus log gives
+// the message history for free. `actor` is always the host-authoritative sender
+// (resolved from the caller's `FirmContext`, never the request body) per ADR-0002.
+
+/// The `kind` under which [`MessengerEvent`]s are emitted on the event bus.
+pub const MESSENGER_EVENT_KIND: &str = "messenger.message";
+
+/// Who a [`MessengerEvent`] is addressed to.
+///
+/// A serde **internally-tagged** union (`{ "kind": "public" }` /
+/// `{ "kind": "group", "name": "…" }`) so it mirrors a TypeScript discriminated
+/// union 1:1 on the Cockpit side.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MessengerScope {
+    /// Firm-wide — visible to every employee.
+    #[default]
+    Public,
+    /// Addressed to a named group.
+    ///
+    /// At P10.1 this is an **addressing label only**: the message log is
+    /// firm-wide and not yet filtered by group membership. Per-group read ACLs
+    /// land in a later slice — do not treat `group` as a confidentiality
+    /// boundary today.
+    Group {
+        /// The group's name.
+        name: String,
+    },
+}
+
+impl MessengerScope {
+    /// A short, stable label for logs/audit, e.g. `public` or `group:engineering`.
+    pub fn label(&self) -> String {
+        match self {
+            MessengerScope::Public => "public".to_string(),
+            MessengerScope::Group { name } => format!("group:{name}"),
+        }
+    }
+}
+
+/// One internal message: who sent it, the text, and who it is addressed to.
+///
+/// Carried as the JSON payload of an [`Event`] of kind [`MESSENGER_EVENT_KIND`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessengerEvent {
+    /// The host-authoritative sender (the caller's `FirmContext` handle).
+    pub actor: String,
+    /// The message body.
+    pub text: String,
+    /// Who the message is addressed to.
+    pub scope: MessengerScope,
+}
+
+impl MessengerEvent {
+    /// Build a message from its sender, text, and scope.
+    pub fn new(actor: impl Into<String>, text: impl Into<String>, scope: MessengerScope) -> Self {
+        MessengerEvent {
+            actor: actor.into(),
+            text: text.into(),
+            scope,
+        }
+    }
+
+    /// Wrap this message as an [`Event`] for emission on the bus.
+    pub fn to_event(&self) -> Event {
+        Event::with_payload(
+            MESSENGER_EVENT_KIND,
+            serde_json::to_value(self).expect("MessengerEvent always serializes"),
+        )
+    }
+}
+
 /// Input handed to [`GuestModule::execute`].
 ///
 /// Carries the guest-specific `payload` **only** — never a [`FirmContext`]. See
@@ -276,6 +352,57 @@ mod tests {
         round_trip(&GuestRequest::new(json!({"company_id": 7})));
         round_trip(&GuestResponse::new(json!({"npv": 1234.5})));
         round_trip(&LogLevel::Warn);
+    }
+
+    #[test]
+    fn messenger_event_round_trips_and_tags_scope() {
+        round_trip(&MessengerEvent::new(
+            "elena@kanbrick.com",
+            "hi",
+            MessengerScope::Public,
+        ));
+        round_trip(&MessengerEvent::new(
+            "elena@kanbrick.com",
+            "hi team",
+            MessengerScope::Group {
+                name: "engineering".to_string(),
+            },
+        ));
+        // Scope is a discriminated union keyed on `kind`.
+        assert_eq!(
+            serde_json::to_value(MessengerScope::Public).unwrap(),
+            json!({"kind": "public"})
+        );
+        assert_eq!(
+            serde_json::to_value(MessengerScope::Group {
+                name: "engineering".to_string()
+            })
+            .unwrap(),
+            json!({"kind": "group", "name": "engineering"})
+        );
+        // The default scope is public.
+        assert_eq!(MessengerScope::default(), MessengerScope::Public);
+    }
+
+    #[test]
+    fn messenger_event_to_event_uses_the_messenger_kind() {
+        let msg = MessengerEvent::new("elena@kanbrick.com", "hi", MessengerScope::Public);
+        let event = msg.to_event();
+        assert_eq!(event.kind, MESSENGER_EVENT_KIND);
+        let decoded: MessengerEvent = serde_json::from_value(event.payload).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn messenger_scope_label_is_stable() {
+        assert_eq!(MessengerScope::Public.label(), "public");
+        assert_eq!(
+            MessengerScope::Group {
+                name: "engineering".to_string()
+            }
+            .label(),
+            "group:engineering"
+        );
     }
 
     #[test]
