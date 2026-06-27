@@ -67,7 +67,7 @@ behind a Phase-8 probe:
 |---|---|---|---|
 | P7 — Cockpit Shell | [#78](https://github.com/Tnsr-Q/Kanbrick-V1/issues/78) | 2 | **built + CI-gated** (#87–#92) |
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
-| P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.3 merged · P9.5 ledger built** (#101–#106) |
+| P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.3 + 9.5 merged · P9.4 streaming UI built** (#101–#106) |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | slices enumerated in epic |
 | P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | slices enumerated in epic |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
@@ -116,7 +116,17 @@ priced independently in integer **nano-USD** (`ModelPrice`/`PriceTable`), record
 per-user `TokenLedger` (in-memory backend; aggregation reuses `Usage::accumulate`), with a
 `Budget` value type. This is *capture + pricing* only — budget **enforcement** (central approval
 queue, sweep) is P12.3 per ADR-0015. Fully workspace-side and CI-tested; no routes yet (the
-usage UI is P12). Remaining P9: P9.4 streaming UI (#104, cockpit) and P9.6 DLP+egress gate (#106).
+usage UI is P12).
+
+P9.4 wires BYO-AI streaming into the **cockpit** (Tauri v2): a `stream_completion` host command
+opens a Tauri **Channel**, resolves the selected provider's key from host-side custody (the P9.3
+`ProviderKeyStore`, in-memory now; Stronghold per ADR-0009), and streams `ChatProvider::stream`
+deltas token-by-token to the webview — which sends only `{ provider, model, prompt }`, **never a
+key** (ADR-0016). A React selector/console drives it, with cancel via a per-stream flag. P9.4
+verifies headless with a no-network `EchoStreamProvider` stub; the real P9.2 adapters plug into the
+identical `ChatProvider` interface at P9.6. The cockpit now depends on `kanbrick-providers` by path
+(cockpit CI builds it; added to the cockpit.yml path filter). Remaining P9: **P9.6** DLP + egress
+gate (#106) — the capstone that makes BYO-AI actually call out.
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator

@@ -35,6 +35,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Talks to the localhost sidecar only (plain HTTP) — no TLS backend pulled in.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# BYO-AI provider abstraction + key custody (P9.1–9.3). A firm-OS workspace member,
+# depended on by path; it pulls only serde/serde_json/thiserror/uuid — no HTTP or
+# async stack — so it stays light inside the cockpit's separate build graph.
+kanbrick-providers = { path = "../../kanbrick-providers" }
+uuid = { version = "1", features = ["v4"] }
 
 [features]
 # Used by `tauri build` for production bundles; DO NOT REMOVE.

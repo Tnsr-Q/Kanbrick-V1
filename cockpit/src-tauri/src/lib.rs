@@ -10,9 +10,11 @@
 //! spine — it re-implements none of it.
 
 mod auth;
+mod providers;
 mod sidecar;
 
 use auth::Session;
+use providers::ProviderHub;
 use sidecar::SidecarSupervisor;
 use tauri::Manager;
 
@@ -23,6 +25,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(SidecarSupervisor::default())
         .manage(Session::default())
+        .manage(ProviderHub::default())
         .invoke_handler(tauri::generate_handler![
             sidecar::sidecar_status,
             auth::login,
@@ -30,6 +33,10 @@ pub fn run() {
             auth::session_status,
             auth::session_refresh,
             auth::me,
+            providers::save_provider_key,
+            providers::list_provider_keys,
+            providers::stream_completion,
+            providers::cancel_completion,
         ])
         .setup(|app| {
             // Spawn + health-gate the API sidecar; readiness is pushed to the

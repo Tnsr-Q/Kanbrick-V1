@@ -17,6 +17,7 @@ on:
       - "kanbrick-store/**"
       - "kanbrick-mesh/**"
       - "kanbrick-cli/**"
+      - "kanbrick-providers/**"
       - "seed/**"
       - ".github/workflows/cockpit.yml"
   pull_request:
