@@ -10,6 +10,7 @@ import Login from "./Login";
 import Me from "./Me";
 import Spikes from "./Spikes";
 import Providers from "./Providers";
+import Visualizer from "./Visualizer";
 import "./App.css";
 
 const SIDECAR_COPY = {
@@ -30,7 +31,9 @@ type Auth = "unknown" | "in" | "out";
 export default function App() {
   const [sidecar, setSidecar] = useState<SidecarStatus>({ state: "starting" });
   const [auth, setAuth] = useState<Auth>("unknown");
-  const [view, setView] = useState<"main" | "spikes" | "providers">("main");
+  const [view, setView] = useState<
+    "main" | "spikes" | "providers" | "visualizer"
+  >("main");
 
   useEffect(() => {
     let active = true;
@@ -84,6 +87,15 @@ export default function App() {
     );
   }
 
+  // P10.5 (#117) live component visualizer — its own wider surface.
+  if (view === "visualizer") {
+    return (
+      <main className="splash spikes-view">
+        <Visualizer onBack={() => setView("main")} />
+      </main>
+    );
+  }
+
   // P8.5 (#97) frontend de-risk spike — a separate, wider surface for ADR-0011.
   if (view === "spikes") {
     return (
@@ -133,6 +145,10 @@ export default function App() {
               <span aria-hidden="true">·</span>
               <button className="link-btn" onClick={() => setView("providers")}>
                 BYO-AI (P9.4)
+              </button>
+              <span aria-hidden="true">·</span>
+              <button className="link-btn" onClick={() => setView("visualizer")}>
+                Visualizer (P10.5)
               </button>
             </>
           )}

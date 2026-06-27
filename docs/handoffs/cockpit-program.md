@@ -68,7 +68,7 @@ behind a Phase-8 probe:
 | P7 — Cockpit Shell | [#78](https://github.com/Tnsr-Q/Kanbrick-V1/issues/78) | 2 | **built + CI-gated** (#87–#92) |
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
-| P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **slices filed #113–#119** · P10.1–P10.2 merged (#120, #121) · P10.4 visualizer backend in flight |
+| P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **slices filed #113–#119** · P10.1–P10.2, P10.4 merged (#120–#122) · P10.5 visualizer UI in flight |
 | P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | slices enumerated in epic |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
@@ -157,8 +157,14 @@ eviction and a process restart. **P10.2 merged as [#121].** **P10.4** (visualize
 live health counters — joining the `MeshRuntime` registry (name/version), the `GuestMetric` counters (the
 same source as `/metrics`), and each guest's `GuestPolicy` clearance floor into a flat `ComponentStatus`
 mirrored 1:1 to a TS type for the P10.5 UI. It is L4-gated and audited, and the IPC resolves identity
-host-side (ADR-0016: the Bearer is injected from the host-held session, never the webview). The
-messenger/whiteboard UI is P10.3 and the visualizer UI is P10.5.
+host-side (ADR-0016: the Bearer is injected from the host-held session, never the webview). **P10.4 merged
+as [#122].** **P10.5** (visualizer UI, #117) follows: a React/Vite panel renders a card per component
+(name, version, clearance badge, four live gauges) from `list_components`, with the gauges updated live by
+a `watch_components` Tauri **Channel** stream that polls the host-side `GET /me/components` off the UI
+thread (cancellable via `stop_watching`, mirroring the BYO-AI streaming pattern). Per-component clearance
+is shown and a "Manage" affordance is gated by the viewer's `ClearanceLevel` (from `me()`) vs each
+component's floor — presentation-only; the real bar stays server-side. `tsc --strict` + `vite build` are
+green. The messenger/whiteboard UI is P10.3.
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator

@@ -559,3 +559,112 @@ h1 {
   max-height: 280px;
   overflow-y: auto;
 }
+
+/* ── Live component visualizer (P10.5, #117) ─────────────────────────────── */
+
+.visualizer {
+  align-items: stretch;
+  text-align: left;
+  width: 100%;
+  max-width: 760px;
+  gap: 14px;
+}
+
+.visualizer h1,
+.visualizer .subtitle {
+  text-align: center;
+}
+
+.visualizer .back {
+  align-self: flex-start;
+}
+
+.chip.live {
+  color: var(--ok);
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.3);
+}
+
+.component-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.component-card {
+  padding: 16px;
+  border-radius: 14px;
+  background: rgba(13, 18, 36, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.component-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.component-name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.component-version {
+  margin-top: -8px;
+  font-size: 12px;
+  color: #6b7396;
+  font-variant-numeric: tabular-nums;
+}
+
+.gauges {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.gauge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 4px;
+  border-radius: 10px;
+  background: rgba(7, 10, 20, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  transition: border-color 0.3s ease;
+}
+
+.gauge.is-live {
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+.gauge-value {
+  font-size: 18px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.gauge-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.component-actions {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+}
+
+.hint.locked {
+  font-size: 12px;
+  opacity: 0.8;
+}
