@@ -1,8 +1,9 @@
-//! P10.1 (#113) — `/me/messenger` over HTTP. Asserts the acceptance criteria
-//! end-to-end against the shared `EventBus`: unauthenticated is `401`, a send is
-//! emitted with a host-authoritative `actor` (never the body), the log replays
-//! prior sends honoring `kind` + `limit`, group scope round-trips, and every send
-//! is audited under the caller's identity.
+//! P10.1 (#113) + P10.2 (#114) — `/me/messenger` over HTTP. Asserts the acceptance
+//! criteria end-to-end: unauthenticated is `401`, a send is persisted with a
+//! host-authoritative `actor` (never the body) and emitted on the bus, the log
+//! replays prior sends from the **durable store** honoring `kind` + `limit`, group
+//! scope round-trips, every send is audited under the caller's identity, and each
+//! send writes a durable `(:MessengerMessage)` node.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -10,7 +11,7 @@ use chrono::Duration;
 use http_body_util::BodyExt;
 use kanbrick_api::{router, AppState};
 use kanbrick_auth::{AuditLog, JwtAuthenticator, LoginService};
-use kanbrick_store::{Migrator, Store};
+use kanbrick_store::{count_messages, Migrator, Store};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -142,7 +143,7 @@ async fn send_then_log_round_trip_uses_host_authoritative_actor() {
     assert_eq!(sent["text"], "hello team");
     assert_eq!(sent["scope"], json!({ "kind": "public" }));
 
-    // Replay — the message comes back from the bus log.
+    // Replay — the message comes back from the durable store.
     let (status, log) = send(&app, "GET", "/me/messenger/log", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
     let arr = log.as_array().unwrap();
@@ -258,6 +259,33 @@ async fn messages_are_visible_across_users_on_the_shared_bus() {
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["actor"], ELENA);
     assert_eq!(arr[0]["text"], "all hands");
+}
+
+#[tokio::test]
+async fn every_send_persists_a_durable_messenger_message_node() {
+    let (_d, app, store) = app();
+    let token = login(&app, ELENA, "pw2").await;
+
+    assert_eq!(count_messages(&store).unwrap(), 0);
+    for text in ["durable one", "durable two"] {
+        send(
+            &app,
+            "POST",
+            "/me/messenger/send",
+            Some(&token),
+            Some(json!({ "text": text })),
+        )
+        .await;
+    }
+    // Each send writes one durable (:MessengerMessage) node to the store.
+    assert_eq!(count_messages(&store).unwrap(), 2);
+
+    // ...and the log endpoint replays them from that durable store, oldest→newest.
+    let (_, log) = send(&app, "GET", "/me/messenger/log", Some(&token), None).await;
+    let arr = log.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["text"], "durable one");
+    assert_eq!(arr[1]["text"], "durable two");
 }
 
 #[tokio::test]

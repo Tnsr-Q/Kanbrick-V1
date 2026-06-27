@@ -12,8 +12,11 @@
 //! can react to a valuation guest's completion with a strongly-typed payload.
 //!
 //! The log is in-memory: it is the source of truth for the running process and is
-//! replayable within it. Durable, cross-restart persistence is a future
-//! extension (it would back this same log with the store).
+//! replayable within it. It can be **capacity-bounded** via
+//! [`with_capacity`](EventBus::with_capacity) so it cannot grow without limit
+//! (#114); the oldest events are then evicted on overflow. Durable, cross-restart
+//! persistence is layered on top by consumers that need it (e.g. the messenger
+//! backs its history with the store).
 
 use std::sync::{Arc, Mutex};
 
@@ -37,6 +40,9 @@ struct Inner {
     log: Vec<Event>,
     subscriptions: Vec<Subscription>,
     next_id: SubscriptionId,
+    /// Optional cap on the replayable log length. `None` is unbounded; `Some(n)`
+    /// keeps only the most recent `n` events, evicting the oldest on overflow.
+    capacity: Option<usize>,
 }
 
 /// A cloneable, thread-safe publish/subscribe event bus with a replayable log.
@@ -49,6 +55,20 @@ impl EventBus {
     /// Create an empty bus.
     pub fn new() -> Self {
         EventBus::default()
+    }
+
+    /// Create an empty bus whose replayable log is **bounded** to the most recent
+    /// `capacity` events (a ring buffer): once the log exceeds `capacity`, the
+    /// oldest events are evicted so memory cannot grow without limit (#114).
+    /// `capacity` is clamped to at least 1, so the most recent event is always
+    /// retained and eviction never panics.
+    pub fn with_capacity(capacity: usize) -> Self {
+        EventBus {
+            inner: Arc::new(Mutex::new(Inner {
+                capacity: Some(capacity.max(1)),
+                ..Inner::default()
+            })),
+        }
     }
 
     /// Subscribe `handler` to events of `kind`. Returns a [`SubscriptionId`].
@@ -109,6 +129,14 @@ impl EventBus {
         let handlers: Vec<Handler> = {
             let mut inner = self.inner.lock().expect("event bus lock");
             inner.log.push(event.clone());
+            // Bounded log (ring buffer): evict the oldest events once the log
+            // exceeds the configured capacity. Unbounded when `capacity` is None.
+            if let Some(capacity) = inner.capacity {
+                if inner.log.len() > capacity {
+                    let overflow = inner.log.len() - capacity;
+                    inner.log.drain(0..overflow);
+                }
+            }
             inner
                 .subscriptions
                 .iter()
@@ -231,6 +259,58 @@ mod tests {
         });
         assert_eq!(replayed.load(Ordering::SeqCst), 2);
         assert_eq!(bus.history().len(), 3);
+    }
+
+    #[test]
+    fn a_bounded_log_evicts_oldest_and_never_panics() {
+        let bus = EventBus::with_capacity(2);
+        bus.emit(Event::new("k1"));
+        bus.emit(Event::new("k2"));
+        bus.emit(Event::new("k3"));
+        let history = bus.history();
+        assert_eq!(history.len(), 2, "the log is bounded to its capacity");
+        assert_eq!(history[0].kind, "k2", "the oldest event was evicted");
+        assert_eq!(history[1].kind, "k3", "the most recent event is retained");
+    }
+
+    #[test]
+    fn capacity_is_clamped_to_at_least_one() {
+        // A zero capacity is clamped to 1: the most recent event is always kept
+        // and eviction never panics on a `drain(0..1)`.
+        let bus = EventBus::with_capacity(0);
+        bus.emit(Event::new("first"));
+        bus.emit(Event::new("latest"));
+        let history = bus.history();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].kind, "latest");
+    }
+
+    #[test]
+    fn a_bounded_log_still_routes_to_subscribers() {
+        // Bounding the log must not change delivery semantics.
+        let bus = EventBus::with_capacity(1);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        bus.subscribe("k", move |_| {
+            h.fetch_add(1, Ordering::SeqCst);
+        });
+        bus.emit(Event::new("k"));
+        bus.emit(Event::new("k"));
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "every emit is delivered");
+        assert_eq!(bus.history().len(), 1, "but only the most recent is logged");
+    }
+
+    #[test]
+    fn default_bus_is_unbounded() {
+        let bus = EventBus::new();
+        for i in 0..50 {
+            bus.emit(Event::new(format!("k{i}")));
+        }
+        assert_eq!(
+            bus.history().len(),
+            50,
+            "the default bus retains everything"
+        );
     }
 
     #[test]
