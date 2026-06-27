@@ -68,7 +68,7 @@ behind a Phase-8 probe:
 | P7 — Cockpit Shell | [#78](https://github.com/Tnsr-Q/Kanbrick-V1/issues/78) | 2 | **built + CI-gated** (#87–#92) |
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
-| P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **slices filed #113–#119** · P10.1 messenger backend in flight |
+| P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **slices filed #113–#119** · P10.1 merged (#120) · P10.2 durability in flight |
 | P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | slices enumerated in epic |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
@@ -147,7 +147,12 @@ a typed `MessengerEvent { actor, text, scope }` with a serde **internally-tagged
 It rides the **existing** `EventBus` (typed events over the bus + `history()` replay — no new fabric),
 resolves `actor` host-side from the validated `FirmContext` (never the request body, ADR-0002/0016),
 and audits every send via `AuditLog`. Pure backend + integration-tested (the `provider_keys` route/test
-template); the unbounded-log hardening is P10.2 and the messenger/whiteboard UI is P10.3.
+template). **P10.1 merged as [#120].** **P10.2** (durability, #114) follows: each send now persists an
+append-only `(:MessengerMessage)` to SparrowDB (the durable, authoritative history) via the ADR-0001
+`MERGE`+`MATCH … SET` dialect; the `EventBus` replay log is bounded by a ring buffer
+(`EventBus::with_capacity`, default 1024 on the control-plane bus) so it cannot grow without limit; and
+`GET /me/messenger/log` reads the **durable store** (not the bounded bus), so history survives both bus
+eviction and a process restart. The messenger/whiteboard UI is P10.3.
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator

@@ -77,6 +77,12 @@ pub const DEFAULT_ASSET_DIR: &str = "/var/lib/kanbrick/assets";
 /// graph/event callbacks; the cap is revoked the moment the invocation returns.
 const CAP_TTL: Duration = Duration::from_secs(60);
 
+/// Capacity of the control-plane event bus's in-memory replay log (#114). The bus
+/// keeps a bounded recent-replay window so its log cannot grow without limit;
+/// durable history (e.g. the messenger's `(:MessengerMessage)` records) lives in
+/// the store, not this window.
+const EVENT_LOG_CAPACITY: usize = 1024;
+
 /// The three business guests, embedded at build time (build.rs → `include_bytes!`).
 const VALUATION_WASM: &[u8] = include_bytes!(env!("KANBRICK_VALUATION_GUEST_WASM"));
 const REPORTING_WASM: &[u8] = include_bytes!(env!("KANBRICK_REPORTING_GUEST_WASM"));
@@ -197,7 +203,9 @@ impl AppState {
     ) -> Result<Self, Error> {
         let store = Arc::new(store);
         let assets = Arc::new(AssetStore::new(config.asset_dir));
-        let bus = EventBus::new();
+        // Bounded recent-replay window so the bus log cannot grow without limit
+        // (#114); durable history lives in the store, not this window.
+        let bus = EventBus::with_capacity(EVENT_LOG_CAPACITY);
         let mesh = Arc::new(build_mesh(store.clone(), &assets, bus.clone())?);
         let admission = Arc::new(GuestAdmission::new(
             mesh.guests().into_iter().map(|g| g.name),

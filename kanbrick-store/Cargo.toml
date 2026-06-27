@@ -14,6 +14,7 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+uuid.workspace = true
 
 # Vendored SparrowDB (L3 — Brain). Path dependencies into the git submodule at
 # `crates/sparrowdb`, which is excluded from this workspace but built as an
