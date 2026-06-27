@@ -11,11 +11,13 @@
 
 mod auth;
 mod components;
+mod messenger;
 mod providers;
 mod sidecar;
 
 use auth::Session;
 use components::VisualizerHub;
+use messenger::MessengerHub;
 use providers::ProviderHub;
 use sidecar::SidecarSupervisor;
 use tauri::Manager;
@@ -29,6 +31,7 @@ pub fn run() {
         .manage(Session::default())
         .manage(ProviderHub::default())
         .manage(VisualizerHub::default())
+        .manage(MessengerHub::default())
         .invoke_handler(tauri::generate_handler![
             sidecar::sidecar_status,
             auth::login,
@@ -39,6 +42,10 @@ pub fn run() {
             components::list_components,
             components::watch_components,
             components::stop_watching,
+            messenger::send_message,
+            messenger::message_log,
+            messenger::watch_messages,
+            messenger::stop_messages,
             providers::save_provider_key,
             providers::list_provider_keys,
             providers::stream_completion,

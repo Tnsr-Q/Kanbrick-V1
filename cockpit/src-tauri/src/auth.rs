@@ -137,6 +137,33 @@ pub(crate) async fn authed_get(app: &AppHandle, path: &str) -> Result<reqwest::R
         .map_err(|e| format!("could not reach the local API: {e}"))
 }
 
+/// The authenticated host→sidecar **POST** path — the [`authed_get`] sibling.
+///
+/// Attaches the Bearer from [`Session`] and a JSON `body`. Identity stays
+/// host-authoritative (ADR-0016): the webview supplies the request *content*, never
+/// the token or the caller's identity.
+pub(crate) async fn authed_post<B: Serialize + ?Sized>(
+    app: &AppHandle,
+    path: &str,
+    body: &B,
+) -> Result<reqwest::Response, String> {
+    let base_url = app
+        .state::<SidecarSupervisor>()
+        .base_url()
+        .ok_or_else(|| "the local API is still starting".to_string())?;
+    let token = app
+        .state::<Session>()
+        .token()
+        .ok_or_else(|| "not signed in".to_string())?;
+    reqwest::Client::new()
+        .post(format!("{base_url}{path}"))
+        .bearer_auth(token)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| format!("could not reach the local API: {e}"))
+}
+
 /// `invoke('session_refresh')` — validate the held token against `GET /me`.
 ///
 /// The host injects the Bearer; the webview supplies nothing. A **401** is the

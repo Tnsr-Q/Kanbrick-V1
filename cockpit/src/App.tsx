@@ -11,6 +11,7 @@ import Me from "./Me";
 import Spikes from "./Spikes";
 import Providers from "./Providers";
 import Visualizer from "./Visualizer";
+import Messenger from "./Messenger";
 import "./App.css";
 
 const SIDECAR_COPY = {
@@ -32,7 +33,7 @@ export default function App() {
   const [sidecar, setSidecar] = useState<SidecarStatus>({ state: "starting" });
   const [auth, setAuth] = useState<Auth>("unknown");
   const [view, setView] = useState<
-    "main" | "spikes" | "providers" | "visualizer"
+    "main" | "spikes" | "providers" | "visualizer" | "messenger"
   >("main");
 
   useEffect(() => {
@@ -83,6 +84,15 @@ export default function App() {
     return (
       <main className="splash spikes-view">
         <Providers onBack={() => setView("main")} />
+      </main>
+    );
+  }
+
+  // P10.3 (#115) messenger + whiteboard + tasks — its own wider surface.
+  if (view === "messenger") {
+    return (
+      <main className="splash spikes-view">
+        <Messenger onBack={() => setView("main")} />
       </main>
     );
   }
@@ -149,6 +159,10 @@ export default function App() {
               <span aria-hidden="true">·</span>
               <button className="link-btn" onClick={() => setView("visualizer")}>
                 Visualizer (P10.5)
+              </button>
+              <span aria-hidden="true">·</span>
+              <button className="link-btn" onClick={() => setView("messenger")}>
+                Messenger (P10.3)
               </button>
             </>
           )}
