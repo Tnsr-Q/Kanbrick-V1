@@ -57,6 +57,7 @@ mod caps;
 mod executor;
 mod http_client;
 mod internal;
+mod messenger;
 mod metrics;
 mod provider_keys;
 
@@ -319,6 +320,8 @@ pub fn router(state: AppState) -> Router {
             post(provider_keys::create_key).get(provider_keys::list_keys),
         )
         .route("/me/provider-keys/{id}", delete(provider_keys::delete_key))
+        .route("/me/messenger/send", post(messenger::send_message))
+        .route("/me/messenger/log", get(messenger::message_log))
         .with_state(state)
 }
 
