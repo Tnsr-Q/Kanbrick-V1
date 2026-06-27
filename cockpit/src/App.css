@@ -668,3 +668,192 @@ h1 {
   font-size: 12px;
   opacity: 0.8;
 }
+
+/* ── Messenger + whiteboard + tasks (P10.3, #115) ────────────────────────── */
+
+.messenger {
+  align-items: stretch;
+  text-align: left;
+  width: 100%;
+  max-width: 900px;
+  gap: 14px;
+}
+
+.messenger h1,
+.messenger .subtitle {
+  text-align: center;
+}
+
+.messenger .back {
+  align-self: flex-start;
+}
+
+.messenger-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.messenger .panel {
+  align-items: stretch;
+  width: 100%;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(13, 18, 36, 0.4);
+  gap: 10px;
+}
+
+.messenger .panel h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.msg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(7, 10, 20, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  max-width: 92%;
+  align-self: flex-start;
+}
+
+.msg.is-self {
+  align-self: flex-end;
+  background: rgba(99, 102, 241, 0.14);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.msg-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.msg-actor {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.msg-text {
+  font-size: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.msg-scope {
+  display: flex;
+  gap: 8px;
+}
+
+.msg-scope select,
+.msg-scope input,
+.messenger textarea,
+.task-add input {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(13, 18, 36, 0.6);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+}
+
+.msg-scope select:focus,
+.msg-scope input:focus,
+.messenger textarea:focus,
+.task-add input:focus {
+  border-color: var(--indigo);
+}
+
+.whiteboard {
+  width: 100%;
+  height: 240px;
+  border-radius: 10px;
+  background: rgba(7, 10, 20, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.task-add {
+  display: flex;
+  gap: 8px;
+}
+
+.task-add input {
+  flex: 1;
+}
+
+.task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.task-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.task-list li.is-done span {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.toast {
+  position: fixed;
+  bottom: 22px;
+  right: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: rgba(13, 18, 36, 0.95);
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  color: var(--text);
+  font-size: 13px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+  max-width: 320px;
+}
+
+.toast .dot {
+  background: var(--indigo);
+}

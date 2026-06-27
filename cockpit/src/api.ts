@@ -82,6 +82,58 @@ export const watchComponents = (
 export const stopWatching = (watch: string): Promise<void> =>
   invoke<void>("stop_watching", { watch });
 
+// ── Messenger + whiteboard (P10.3, #115) ─────────────────────────────────────
+
+/** Mirror of the Rust `MessengerScope` (serde internally-tagged on `kind`). */
+export type MessengerScope =
+  | { kind: "public" }
+  | { kind: "group"; name: string };
+
+/** Mirror of `kanbrick-api`'s `MessengerEvent` (and the Rust `MessengerMessage`). */
+export type MessengerMessage = {
+  actor: string;
+  text: string;
+  scope: MessengerScope;
+};
+
+/** Mirror of the Rust `MessagesEvent` (serde internally-tagged on `event`). */
+export type MessagesEvent =
+  | { event: "snapshot"; messages: MessengerMessage[] }
+  | { event: "error"; message: string }
+  | { event: "stopped" };
+
+/**
+ * Post a message via the P10.1 route (`POST /me/messenger/send`). The webview sends
+ * only content + scope; the host injects the Bearer and the server stamps the
+ * host-authoritative `actor` (echoed back). No identity crosses outward (ADR-0016).
+ */
+export const sendMessage = (
+  text: string,
+  scope: MessengerScope,
+): Promise<MessengerMessage> =>
+  invoke<MessengerMessage>("send_message", { text, scope });
+
+/** The current message log, oldest→newest (one-shot). */
+export const messageLog = (): Promise<MessengerMessage[]> =>
+  invoke<MessengerMessage[]>("message_log");
+
+/**
+ * Stream the live message log over a Channel (P10.3). `onEvent` fires for each
+ * `snapshot` (and on `error` / `stopped`). Resolves to a watch id for
+ * {@link stopMessages}. The webview passes only the channel.
+ */
+export const watchMessages = (
+  onEvent: (event: MessagesEvent) => void,
+): Promise<string> => {
+  const channel = new Channel<MessagesEvent>();
+  channel.onmessage = onEvent;
+  return invoke<string>("watch_messages", { channel });
+};
+
+/** Stop a live message watch by id. */
+export const stopMessages = (watch: string): Promise<void> =>
+  invoke<void>("stop_messages", { watch });
+
 // ── BYO-AI providers (P9.4, #104) ────────────────────────────────────────────
 
 /** Mirror of `kanbrick_providers::ProviderKind` (serde lowercase). */
