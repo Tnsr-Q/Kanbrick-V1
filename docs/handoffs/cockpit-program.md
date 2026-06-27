@@ -68,7 +68,7 @@ behind a Phase-8 probe:
 | P7 — Cockpit Shell | [#78](https://github.com/Tnsr-Q/Kanbrick-V1/issues/78) | 2 | **built + CI-gated** (#87–#92) |
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
-| P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **slices filed #113–#119** · P10.1–P10.5 merged (#120–#124) · P10.6 internal-RPC self-registration in flight · P10.7 (#119) remains |
+| P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **P10.1–P10.6 merged (#120–#125)** · P10.7 service introspection in flight — **phase all but complete** |
 | P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | slices enumerated in epic |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
@@ -176,8 +176,16 @@ surface gains `POST /internal/components/register` so a newly-added Rust sidecar
 wins) that the P10.4 `GET /me/components` folds in alongside the WASM guests. Registration is gated **solely**
 by the constant-time `x-kanbrick-internal-token` (fail-closed; no JWT path) — reusing the same gate as the
 graph/event callbacks — and an `executor`-side `register_component(cp_url, token, &descriptor)` helper is the
-one-shot a sidecar calls at boot. Backend-only (the `kind` discriminator + UI land in P10.7). **P10.6 in
-flight; P10.7 (#119, in-process service introspection) remains.**
+one-shot a sidecar calls at boot. Backend-only (the `kind` discriminator + UI land in P10.7). **P10.6 merged
+as [#125].** **P10.7** (in-process service introspection, #119) closes the phase: `GET /me/components` now
+unions **all three component kinds** — WASM guests, self-registered sidecars (#118), and the in-process
+firm-OS services (the graph store, event bus, asset store, identity, capability registry, provider-key
+custody, plus the executor forwarder + internal-RPC surface when the control-plane/executor split is wired,
+so the service set reflects the live `AppState` configuration). Every row carries a `kind` discriminator
+(`guest` | `sidecar` | `service`, names deduped in authority order guest > sidecar > service), mirrored 1:1
+to the cockpit TS `ComponentKind`; the visualizer groups the three kinds, badges each, and shows live gauges
+only for guests. `tsc --strict` + `vite build` green. **P10.7 in flight — Phase 10 (Messenger + Visualizer,
+Req 2.1/2.2) then complete end to end.**
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator

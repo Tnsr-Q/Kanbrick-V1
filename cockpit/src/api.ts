@@ -44,7 +44,12 @@ export const logout = (): Promise<void> => invoke<void>("logout");
 
 // ── Component visualizer (P10.4, #116) ───────────────────────────────────────
 
-/** Mirror of the Rust `ComponentStatus` (kanbrick-api `GET /me/components`). */
+/** Mirror of the Rust `ComponentKind` (serde snake_case). Three component kinds
+ * surface uniformly in the visualizer (P10.7, #119). */
+export type ComponentKind = "guest" | "sidecar" | "service";
+
+/** Mirror of the Rust `ComponentStatus` (kanbrick-api `GET /me/components`). Only
+ * guests carry live invocation counters; sidecars/services report zeroes. */
 export type ComponentStatus = {
   name: string;
   version: string;
@@ -53,6 +58,7 @@ export type ComponentStatus = {
   failed: number;
   timed_out: number;
   clearance: string;
+  kind: ComponentKind;
 };
 
 /** The live component catalogue via the host auth bridge (ADR-0016). */

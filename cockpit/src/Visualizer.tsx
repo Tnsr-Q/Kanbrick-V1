@@ -9,6 +9,7 @@ import {
   me,
   stopWatching,
   watchComponents,
+  type ComponentKind,
   type ComponentsEvent,
   type ComponentStatus,
 } from "./api";
@@ -20,6 +21,20 @@ const CLEARANCE_LABEL: Record<string, string> = {
   L3: "Operational",
   L4: "Strategic",
   L5: "Admin",
+};
+
+/** Component kind → human label (P10.7). */
+const KIND_LABEL: Record<ComponentKind, string> = {
+  guest: "Guest",
+  sidecar: "Sidecar",
+  service: "Service",
+};
+
+/** Render order so the three kinds cluster: guests, then sidecars, then services. */
+const KIND_ORDER: Record<ComponentKind, number> = {
+  guest: 0,
+  sidecar: 1,
+  service: 2,
 };
 
 /** L1..L5 → comparable rank. */
@@ -107,12 +122,18 @@ export default function Visualizer({ onBack }: { onBack: () => void }) {
         <p className="hint">No components running.</p>
       ) : (
         <div className="component-grid">
-          {components.map((c) => {
+          {[...components]
+            .sort(
+              (a, b) =>
+                KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
+                a.name.localeCompare(b.name),
+            )
+            .map((c) => {
             const label = CLEARANCE_LABEL[c.clearance] ?? "";
             const canManage = permits(clearance, c.clearance);
             const isOpen = expanded === c.name && canManage;
             return (
-              <div className="component-card" key={c.name}>
+              <div className={`component-card kind-${c.kind}`} key={c.name}>
                 <div className="component-head">
                   <span className="component-name">{c.name}</span>
                   <span className={`badge badge-${c.clearance.toLowerCase()}`}>
@@ -120,14 +141,27 @@ export default function Visualizer({ onBack }: { onBack: () => void }) {
                     {label && <span className="badge-label">{label}</span>}
                   </span>
                 </div>
-                <div className="component-version">v{c.version}</div>
-
-                <div className="gauges">
-                  <Gauge label="active" value={c.active} />
-                  <Gauge label="completed" value={c.completed} />
-                  <Gauge label="failed" value={c.failed} />
-                  <Gauge label="timed out" value={c.timed_out} />
+                <div className="component-sub">
+                  <span className={`kind-tag kind-tag-${c.kind}`}>
+                    {KIND_LABEL[c.kind]}
+                  </span>
+                  <span className="component-version">v{c.version}</span>
                 </div>
+
+                {c.kind === "guest" ? (
+                  <div className="gauges">
+                    <Gauge label="active" value={c.active} />
+                    <Gauge label="completed" value={c.completed} />
+                    <Gauge label="failed" value={c.failed} />
+                    <Gauge label="timed out" value={c.timed_out} />
+                  </div>
+                ) : (
+                  <p className="hint no-metrics">
+                    {c.kind === "service"
+                      ? "In-process service · no invocation metrics"
+                      : "Self-registered · no invocation metrics"}
+                  </p>
+                )}
 
                 <div className="component-actions">
                   {canManage ? (

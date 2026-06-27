@@ -517,9 +517,11 @@ async fn registered_component_appears_in_me_components() {
         assert!(by_name(guest).is_some(), "missing embedded guest {guest}");
     }
 
-    // The self-registered sidecar appears with its descriptor and zeroed counters
-    // (an externally-reported component carries no invocation metrics).
+    // The self-registered sidecar appears, tagged kind=sidecar (P10.7), with its
+    // descriptor and zeroed counters (an externally-reported component carries no
+    // invocation metrics).
     let sidecar = by_name("ledger-sync").expect("registered component should be listed");
+    assert_eq!(sidecar["kind"], "sidecar");
     assert_eq!(sidecar["version"], "2.1.0");
     assert_eq!(sidecar["clearance"], "L3");
     assert_eq!(sidecar["active"], 0);
