@@ -10,6 +10,7 @@
 //! spine — it re-implements none of it.
 
 mod auth;
+mod components;
 mod providers;
 mod sidecar;
 
@@ -33,6 +34,7 @@ pub fn run() {
             auth::session_status,
             auth::session_refresh,
             auth::me,
+            components::list_components,
             providers::save_provider_key,
             providers::list_provider_keys,
             providers::stream_completion,

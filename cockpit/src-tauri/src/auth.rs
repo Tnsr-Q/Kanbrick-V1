@@ -32,7 +32,7 @@ impl Session {
         *self.token.lock().expect("session lock") = Some(token);
     }
 
-    fn clear(&self) {
+    pub(crate) fn clear(&self) {
         *self.token.lock().expect("session lock") = None;
     }
 
@@ -120,7 +120,7 @@ pub fn session_status(session: tauri::State<'_, Session>) -> SessionState {
 /// validated token (ADR-0002): the webview cannot supply or forge identity. Every
 /// future authenticated command (P7.5 `/me`, providers, loops, …) goes through
 /// this (or a sibling) rather than minting its own request.
-async fn authed_get(app: &AppHandle, path: &str) -> Result<reqwest::Response, String> {
+pub(crate) async fn authed_get(app: &AppHandle, path: &str) -> Result<reqwest::Response, String> {
     let base_url = app
         .state::<SidecarSupervisor>()
         .base_url()

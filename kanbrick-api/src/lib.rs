@@ -54,6 +54,7 @@ use serde_json::Value as JsonValue;
 
 mod admission;
 mod caps;
+mod components;
 mod executor;
 mod http_client;
 mod internal;
@@ -330,6 +331,7 @@ pub fn router(state: AppState) -> Router {
         .route("/me/provider-keys/{id}", delete(provider_keys::delete_key))
         .route("/me/messenger/send", post(messenger::send_message))
         .route("/me/messenger/log", get(messenger::message_log))
+        .route("/me/components", get(components::list_components))
         .with_state(state)
 }
 
