@@ -59,6 +59,29 @@ export type ComponentStatus = {
 export const listComponents = (): Promise<ComponentStatus[]> =>
   invoke<ComponentStatus[]>("list_components");
 
+/** Mirror of the Rust `ComponentsEvent` (serde internally-tagged on `event`). */
+export type ComponentsEvent =
+  | { event: "snapshot"; components: ComponentStatus[] }
+  | { event: "error"; message: string }
+  | { event: "stopped" };
+
+/**
+ * Stream live component snapshots over a Channel (P10.5). `onEvent` fires for each
+ * `snapshot` (and on `error` / `stopped`). Resolves to a watch id for
+ * {@link stopWatching}. Identity is host-side — the webview passes only the channel.
+ */
+export const watchComponents = (
+  onEvent: (event: ComponentsEvent) => void,
+): Promise<string> => {
+  const channel = new Channel<ComponentsEvent>();
+  channel.onmessage = onEvent;
+  return invoke<string>("watch_components", { channel });
+};
+
+/** Stop a live component watch by id. */
+export const stopWatching = (watch: string): Promise<void> =>
+  invoke<void>("stop_watching", { watch });
+
 // ── BYO-AI providers (P9.4, #104) ────────────────────────────────────────────
 
 /** Mirror of `kanbrick_providers::ProviderKind` (serde lowercase). */

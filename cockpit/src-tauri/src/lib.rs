@@ -15,6 +15,7 @@ mod providers;
 mod sidecar;
 
 use auth::Session;
+use components::VisualizerHub;
 use providers::ProviderHub;
 use sidecar::SidecarSupervisor;
 use tauri::Manager;
@@ -27,6 +28,7 @@ pub fn run() {
         .manage(SidecarSupervisor::default())
         .manage(Session::default())
         .manage(ProviderHub::default())
+        .manage(VisualizerHub::default())
         .invoke_handler(tauri::generate_handler![
             sidecar::sidecar_status,
             auth::login,
@@ -35,6 +37,8 @@ pub fn run() {
             auth::session_refresh,
             auth::me,
             components::list_components,
+            components::watch_components,
+            components::stop_watching,
             providers::save_provider_key,
             providers::list_provider_keys,
             providers::stream_completion,
