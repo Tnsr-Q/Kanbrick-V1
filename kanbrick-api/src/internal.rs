@@ -8,6 +8,8 @@
 //! * `POST /internal/events` — publish a guest-emitted event onto the CP bus.
 //! * `GET  /internal/assets/{sha256}` — fetch a content-addressed guest artifact.
 //! * `GET  /internal/registry` — list activated guests + the registry generation.
+//! * `POST /internal/components/register` — a sidecar/plugin self-registers into
+//!   the visualizer's component registry (P10.6, #118).
 //!
 //! This router is built separately from the public [`router`](crate::router) and
 //! is mounted on its own ClusterIP-only listener in split deploys (#70/#71) —
@@ -30,6 +32,7 @@ use kanbrick_core::ClearanceLevel;
 use kanbrick_store::{list_guest_policies, read_registry_generation};
 use serde::{Deserialize, Serialize};
 
+use crate::components::RegisteredComponent;
 use crate::{asset_error, ApiError, AppState};
 
 /// Header carrying the shared transport secret for the internal RPC surface.
@@ -44,6 +47,7 @@ pub fn internal_router(state: AppState) -> Router {
         .route("/internal/events", post(emit_event))
         .route("/internal/assets/{sha256}", get(fetch_asset))
         .route("/internal/registry", get(registry))
+        .route("/internal/components/register", post(register_component))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_internal_token,
@@ -193,4 +197,20 @@ async fn registry(State(state): State<AppState>) -> Result<Json<RegistryResponse
         })
         .collect();
     Ok(Json(RegistryResponse { generation, guests }))
+}
+
+// ── /internal/components/register ─────────────────────────────────────────────
+
+/// `POST /internal/components/register` — a sidecar/plugin self-registers into the
+/// in-process component registry backing the visualizer (`GET /me/components`,
+/// P10.4/P10.6). Authorized **solely** by the shared transport secret that gates
+/// this whole router (a missing/invalid token already failed closed in
+/// [`require_internal_token`]); there is no JWT path for registration. Idempotent:
+/// re-registering a name refreshes its descriptor.
+async fn register_component(
+    State(state): State<AppState>,
+    Json(component): Json<RegisteredComponent>,
+) -> StatusCode {
+    state.components.register(component);
+    StatusCode::NO_CONTENT
 }

@@ -421,3 +421,179 @@ async fn registry_generation_increments_on_activation() {
     assert_eq!(shadow["source"], "registry");
     assert_eq!(shadow["version"], "1.0.0");
 }
+
+// ── Component self-registration (P10.6, #118) ───────────────────────────────
+
+/// A `POST /internal/components/register` body for a sidecar/plugin descriptor.
+fn registration_body(name: &str, version: &str, clearance: &str) -> Value {
+    json!({ "name": name, "version": version, "clearance": clearance })
+}
+
+/// `GET /me/components` through the public router as an L4+ caller (the visualizer
+/// read surface a self-registered component must surface in).
+async fn me_components(public: &axum::Router, token: &str) -> Value {
+    let resp = public
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/me/components")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    body_json(resp).await
+}
+
+#[tokio::test]
+async fn component_registration_requires_the_transport_secret() {
+    let (_sd, _ad, _state, internal, public) = fresh();
+
+    // Registration is gated by the same shared secret: no token and a wrong token
+    // both fail closed, with no JWT path to fall back on.
+    assert_eq!(
+        post_internal(
+            &internal,
+            "/internal/components/register",
+            None,
+            registration_body("ledger-sync", "2.1.0", "L3"),
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post_internal(
+            &internal,
+            "/internal/components/register",
+            Some("wrong-token"),
+            registration_body("ledger-sync", "2.1.0", "L3"),
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Nothing was registered: the visualizer shows only the embedded guests.
+    let l5 = login(&public, "tracy.brittcool@kanbrick.com", "pw5").await;
+    let list = me_components(&public, &l5).await;
+    let names: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        !names.contains(&"ledger-sync"),
+        "a tokenless registration must not appear in the catalogue"
+    );
+}
+
+#[tokio::test]
+async fn registered_component_appears_in_me_components() {
+    let (_sd, _ad, _state, internal, public) = fresh();
+
+    assert_eq!(
+        post_internal(
+            &internal,
+            "/internal/components/register",
+            Some(INTERNAL_TOKEN),
+            registration_body("ledger-sync", "2.1.0", "L3"),
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let l5 = login(&public, "tracy.brittcool@kanbrick.com", "pw5").await;
+    let list = me_components(&public, &l5).await;
+    let arr = list.as_array().unwrap();
+    let by_name = |n: &str| arr.iter().find(|c| c["name"] == n);
+
+    // No regression: the three embedded guests are still listed.
+    for guest in ["valuation", "reporting", "compliance"] {
+        assert!(by_name(guest).is_some(), "missing embedded guest {guest}");
+    }
+
+    // The self-registered sidecar appears with its descriptor and zeroed counters
+    // (an externally-reported component carries no invocation metrics).
+    let sidecar = by_name("ledger-sync").expect("registered component should be listed");
+    assert_eq!(sidecar["version"], "2.1.0");
+    assert_eq!(sidecar["clearance"], "L3");
+    assert_eq!(sidecar["active"], 0);
+    assert_eq!(sidecar["completed"], 0);
+    assert_eq!(sidecar["failed"], 0);
+    assert_eq!(sidecar["timed_out"], 0);
+}
+
+#[tokio::test]
+async fn re_registration_replaces_the_descriptor() {
+    let (_sd, _ad, _state, internal, public) = fresh();
+
+    // Register the same name twice; the second registration refreshes the version.
+    for version in ["1.0.0", "1.4.0"] {
+        assert_eq!(
+            post_internal(
+                &internal,
+                "/internal/components/register",
+                Some(INTERNAL_TOKEN),
+                registration_body("ledger-sync", version, "L3"),
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    let l5 = login(&public, "tracy.brittcool@kanbrick.com", "pw5").await;
+    let list = me_components(&public, &l5).await;
+    let matches: Vec<&Value> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["name"] == "ledger-sync")
+        .collect();
+    assert_eq!(matches.len(), 1, "re-registration replaces, not duplicates");
+    assert_eq!(matches[0]["version"], "1.4.0", "last registration wins");
+}
+
+#[tokio::test]
+async fn a_live_guest_wins_a_name_collision_with_a_sidecar() {
+    let (_sd, _ad, _state, internal, public) = fresh();
+
+    // Register a sidecar that claims a real WASM guest's name with bogus metadata.
+    assert_eq!(
+        post_internal(
+            &internal,
+            "/internal/components/register",
+            Some(INTERNAL_TOKEN),
+            registration_body("valuation", "9.9.9", "L1"),
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let l5 = login(&public, "tracy.brittcool@kanbrick.com", "pw5").await;
+    let list = me_components(&public, &l5).await;
+    let valuation: Vec<&Value> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["name"] == "valuation")
+        .collect();
+
+    // The authoritative guest wins: one row, the guest's real clearance floor (L3),
+    // and not the sidecar's spoofed version — a sidecar cannot shadow a real guest.
+    assert_eq!(valuation.len(), 1, "a sidecar cannot duplicate a guest row");
+    assert_eq!(
+        valuation[0]["clearance"], "L3",
+        "the guest's policy floor wins"
+    );
+    assert_ne!(
+        valuation[0]["version"], "9.9.9",
+        "the guest's version wins, not the sidecar's claim"
+    );
+}
