@@ -911,3 +911,132 @@ h1 {
 .toast .dot {
   background: var(--indigo);
 }
+
+/* ── Loop run-and-watch (P11.7) ──────────────────────────────────────────── */
+
+.loop-runner {
+  align-items: stretch;
+  text-align: left;
+  width: 100%;
+  max-width: 680px;
+  gap: 14px;
+}
+
+.loop-runner h1,
+.loop-runner .subtitle {
+  text-align: center;
+}
+
+.loop-runner .back {
+  align-self: flex-start;
+}
+
+.loop-picker {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.loop-picker select {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(13, 18, 36, 0.6);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.loop-picker select:focus {
+  border-color: var(--indigo);
+}
+
+.run-view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.run-view .status {
+  align-self: flex-start;
+}
+
+.step-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.step-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(13, 18, 36, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.step-pos {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: rgba(99, 102, 241, 0.18);
+  border: 1px solid rgba(99, 102, 241, 0.32);
+}
+
+.step-skill {
+  font-size: 14px;
+  font-weight: 550;
+}
+
+.step-scope {
+  margin-left: auto;
+  font-size: 12px;
+  color: #6b7396;
+  font-variant-numeric: tabular-nums;
+}
+
+.step-badge {
+  margin-left: auto;
+  text-transform: capitalize;
+}
+
+.step-badge.is-pending {
+  color: var(--warn);
+  background: rgba(245, 197, 66, 0.1);
+  border-color: rgba(245, 197, 66, 0.28);
+}
+
+.step-badge.is-ready {
+  color: var(--ok);
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.3);
+}
+
+.step-badge.is-error {
+  color: #fca5a5;
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.3);
+}
+
+.step-detail {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: #fca5a5;
+  opacity: 0.9;
+}

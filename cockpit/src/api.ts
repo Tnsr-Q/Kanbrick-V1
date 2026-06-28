@@ -210,3 +210,78 @@ export const streamCompletion = (
 /** Cancel an in-flight stream by id. */
 export const cancelCompletion = (stream: string): Promise<void> =>
   invoke<void>("cancel_completion", { stream });
+
+// ── Loop run-and-watch (P11.7) ───────────────────────────────────────────────
+
+/** Mirror of the Rust `LoopStepView` (kanbrick-api `LoopStepDto`). */
+export type LoopStepView = {
+  position: number;
+  skill_name: string;
+  scope_id: string;
+};
+
+/** Mirror of the Rust `LoopSummary` (kanbrick-api `LoopDto`). */
+export type LoopSummary = {
+  loop_id: string;
+  name: string;
+  owner: string;
+  created_at: string;
+  steps: LoopStepView[];
+};
+
+/** Mirror of the Rust `RunStepView` (kanbrick-api `RunStepDto`). `status` is one of
+ * `pending|running|completed|denied|failed|timed_out`; `detail` carries the reason
+ * for a denied/failed step. */
+export type RunStepView = {
+  position: number;
+  skill_name: string;
+  scope_id: string;
+  status: string;
+  detail?: string | null;
+};
+
+/** Mirror of the Rust `RunView` (kanbrick-api `RunDto`). `status` is
+ * `running|completed|failed`. */
+export type RunView = {
+  run_id: string;
+  loop_id: string;
+  started_at: string;
+  status: string;
+  steps: RunStepView[];
+};
+
+/** Mirror of the Rust `RunEvent` (serde internally-tagged on `event`). */
+export type RunEvent =
+  | { event: "snapshot"; run: RunView }
+  | { event: "error"; message: string }
+  | { event: "stopped" };
+
+/** The caller's loops via the host auth bridge (ADR-0016). */
+export const listLoops = (): Promise<LoopSummary[]> =>
+  invoke<LoopSummary[]>("list_loops");
+
+/**
+ * Run a loop (`POST /me/loops/{id}/run`). The webview passes only the loop id +
+ * optional input; the host injects the Bearer and the server gates each step at run
+ * time. Resolves to the initial run state (carrying the `run_id` to watch).
+ */
+export const runLoop = (loopId: string, input?: unknown): Promise<RunView> =>
+  invoke<RunView>("run_loop", { loopId, input: input ?? null });
+
+/**
+ * Stream a run's per-step status over a Channel (P11.7) until it reaches a terminal
+ * state. `onEvent` fires for each `snapshot` (and on `error` / `stopped`). Resolves
+ * to a watch id for {@link stopRunWatch}. The webview passes only the run id + channel.
+ */
+export const watchRun = (
+  runId: string,
+  onEvent: (event: RunEvent) => void,
+): Promise<string> => {
+  const channel = new Channel<RunEvent>();
+  channel.onmessage = onEvent;
+  return invoke<string>("watch_run", { runId, channel });
+};
+
+/** Stop a live run watch by id. */
+export const stopRunWatch = (watch: string): Promise<void> =>
+  invoke<void>("stop_run_watch", { watch });

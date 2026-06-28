@@ -11,12 +11,14 @@
 
 mod auth;
 mod components;
+mod loops;
 mod messenger;
 mod providers;
 mod sidecar;
 
 use auth::Session;
 use components::VisualizerHub;
+use loops::LoopRunnerHub;
 use messenger::MessengerHub;
 use providers::ProviderHub;
 use sidecar::SidecarSupervisor;
@@ -32,6 +34,7 @@ pub fn run() {
         .manage(ProviderHub::default())
         .manage(VisualizerHub::default())
         .manage(MessengerHub::default())
+        .manage(LoopRunnerHub::default())
         .invoke_handler(tauri::generate_handler![
             sidecar::sidecar_status,
             auth::login,
@@ -50,6 +53,10 @@ pub fn run() {
             providers::list_provider_keys,
             providers::stream_completion,
             providers::cancel_completion,
+            loops::list_loops,
+            loops::run_loop,
+            loops::watch_run,
+            loops::stop_run_watch,
         ])
         .setup(|app| {
             // Spawn + health-gate the API sidecar; readiness is pushed to the
