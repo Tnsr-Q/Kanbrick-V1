@@ -69,8 +69,7 @@ behind a Phase-8 probe:
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **P10.1–P10.7 merged (#120–#126) — phase complete end to end** |
-| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton-first; **P11.1 merged (#127)** · P11.2 grant-lifecycle HTTP surface in flight |
-| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | slices enumerated in epic |
+| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton-first; **P11.1 merged (#127)** · **P11.2 merged (#128)** · P11.2b skill bridge in flight |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
 | P14 — Multi-Tenant | [#85](https://github.com/Tnsr-Q/Kanbrick-V1/issues/85) | 7 | slices enumerated in epic |
@@ -209,8 +208,17 @@ schema + run engine on the Scheduler, ADR-0013) **→ thin P11.7** run-and-watch
 /me/scopes/{id}/revoke`). Identity stays host-authoritative (the actor is the `AuthedContext`, never the
 body); `approve`/`deny` build the firm org-graph per-request via `DiscoveryGraph::from_store` (always fresh
 for the eligible-grantor chain check; caching deferred); the grant domain types aren't serializable so the
-responses use thin DTOs. The **skill-registry bridge** (publish/list + define-on-scope, connecting P11.1 to
-the gate) lands next as **P11.2b**, then P11.3. **P11.2 in flight.**
+responses use thin DTOs. **P11.2 merged as [#128].** **P11.2b** (skill-registry ⇄ grant bridge) follows: a
+new `skills` route module in `kanbrick-api` (adding `kanbrick-loops` as a dep) connects the P11.1 catalogue
+to the gate. `POST /me/skills` parses a `SKILL.md` with `parse_skill_md`, **host-stamps** the author/`source`
+from the authenticated identity (never the body), and publishes a versioned `SkillVersionRecord` (L3-gated;
+malformed → `400 invalid_skill_md`); `GET /me/skills` + `GET /me/skills/{name}` browse the catalogue/history.
+`POST /me/scopes/{id}/skills` binds a published edition onto an approved scope via `ScopeGrants::define_skill`
+(picking up the edition's `min_clearance` as the run-time floor) — gated on scope **ownership** (or L5), and
+deliberately **not** re-checking the binder's own clearance (`define ≠ run`; the run gate is P11.3), so an L2
+scope owner may bind an L4-requiring skill. `GET` lists the bound skills (owner or L4). The registry record is
+serde-returned directly; the grant `Skill` crosses as a thin DTO. **P11.2b in flight**, then P11.3 (loop run
+engine, ADR-0013).
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator
