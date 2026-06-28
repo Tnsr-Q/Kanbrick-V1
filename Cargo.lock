@@ -1803,6 +1803,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanbrick-loops"
+version = "0.1.0"
+dependencies = [
+ "kanbrick-core",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "kanbrick-mesh"
 version = "0.1.0"
 dependencies = [
