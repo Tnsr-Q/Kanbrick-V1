@@ -62,6 +62,7 @@ mod internal;
 mod messenger;
 mod metrics;
 mod provider_keys;
+mod skills;
 
 pub use admission::{AdmissionConfig, GuestAdmission};
 pub use caps::InvocationCaps;
@@ -350,6 +351,15 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/me/scopes", get(grants::list_scopes))
         .route("/me/scopes/{id}/revoke", post(grants::revoke_scope))
+        .route(
+            "/me/scopes/{id}/skills",
+            post(skills::bind_skill).get(skills::list_scope_skills),
+        )
+        .route(
+            "/me/skills",
+            post(skills::publish_skill).get(skills::browse_skills),
+        )
+        .route("/me/skills/{name}", get(skills::skill_history))
         .with_state(state)
 }
 

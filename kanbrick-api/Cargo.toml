@@ -21,6 +21,7 @@ kanbrick-store.workspace = true
 kanbrick-auth.workspace = true
 kanbrick-mesh.workspace = true
 kanbrick-discovery.workspace = true
+kanbrick-loops.workspace = true
 kanbrick-providers.workspace = true
 axum.workspace = true
 tokio.workspace = true
