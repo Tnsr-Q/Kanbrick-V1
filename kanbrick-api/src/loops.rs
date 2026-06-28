@@ -181,6 +181,10 @@ impl RunState {
 /// Execute a loop's steps sequentially, gating each through `authorize_skill` and
 /// running the authorized guest on the `Scheduler`. Runs on a background thread; it
 /// communicates progress only through the shared [`LoopRunRegistry`].
+// The executor inherently carries the full run spec — the engine handles (store,
+// scheduler, registry) plus the run's identity, base scope, steps, and input; a
+// context struct would only relocate the arity. Mirrors the `Scheduler` trigger fns.
+#[allow(clippy::too_many_arguments)]
 fn execute_loop(
     store: Arc<Store>,
     scheduler: Arc<Scheduler>,
