@@ -17,8 +17,10 @@
 //! * [`registry_meta`] — persisted registry generation counter (#69).
 //! * [`messenger_log`] — durable, append-only `(:MessengerMessage)` history (#114).
 //! * [`skill_registry`] — versioned `(:Skill)`/`(:SkillVersion)` registry (P11.1).
+//! * [`loop_registry`] — `(:Loop)`/`(:LoopStep)` loop-definition schema (P11.3).
 
 pub mod guest_policy;
+pub mod loop_registry;
 pub mod messenger_log;
 pub mod migrations;
 pub mod registry_meta;
@@ -31,6 +33,10 @@ pub mod value;
 pub use guest_policy::{
     list_guest_policies, read_guest_policy, write_guest_policy, GuestPolicy, SOURCE_EMBEDDED,
     SOURCE_REGISTRY,
+};
+pub use loop_registry::{
+    create_loop, get_loop, list_loops_for_owner, loop_steps, LoopRecord, LoopStepRecord,
+    LoopStepSpec,
 };
 pub use messenger_log::{count_messages, list_messages, persist_message};
 pub use migrations::{Migration, MigrationOutcome, Migrator};

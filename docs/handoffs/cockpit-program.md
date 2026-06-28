@@ -69,7 +69,7 @@ behind a Phase-8 probe:
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **P10.1–P10.7 merged (#120–#126) — phase complete end to end** |
-| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton-first; **P11.1 merged (#127)** · **P11.2 merged (#128)** · P11.2b skill bridge in flight |
+| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton-first; **P11.1–P11.2b merged (#127–#129)** · P11.3 loop run engine in flight |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
 | P14 — Multi-Tenant | [#85](https://github.com/Tnsr-Q/Kanbrick-V1/issues/85) | 7 | slices enumerated in epic |
@@ -217,8 +217,19 @@ malformed → `400 invalid_skill_md`); `GET /me/skills` + `GET /me/skills/{name}
 (picking up the edition's `min_clearance` as the run-time floor) — gated on scope **ownership** (or L5), and
 deliberately **not** re-checking the binder's own clearance (`define ≠ run`; the run gate is P11.3), so an L2
 scope owner may bind an L4-requiring skill. `GET` lists the bound skills (owner or L4). The registry record is
-serde-returned directly; the grant `Skill` crosses as a thin DTO. **P11.2b in flight**, then P11.3 (loop run
-engine, ADR-0013).
+serde-returned directly; the grant `Skill` crosses as a thin DTO. **P11.2b merged as [#129].** **P11.3** (loop
+run engine, ADR-0013) follows — the **"it runs"** milestone: a `(:Loop)`/`(:LoopStep)` schema
+(`kanbrick-store::loop_registry`, ADR-0001 dialect) for owned, ordered pipelines (each step names a skill +
+its `scope_id`); a thin **compiler** in a new `kanbrick-api` `loops` module that maps the steps onto the
+**existing** `kanbrick-mesh::Scheduler` (`schedule_with_retry`/`wait`) and **gates each step at run time** via
+`ScopeGrants::authorize_skill` (the runtime gate deferred from P11.2b — host base from
+`ClearanceScope::resolve`), with defense-in-depth enforcement of the backing **guest's** policy floor so the
+loop path is never a weaker door than `POST /guests/{name}`. The `Scheduler` is now wired into `AppState`
+(built, not previously held), and a background executor pipes each step's output into the next, recording live
+per-step `TaskStatus` to an in-process run registry (durable run history is P11.5). Routes: `POST/GET /me/loops`,
+`GET /me/loops/{id}`, `POST /me/loops/{id}/run`, `GET /me/loops/runs/{id}`. Identity stays host-authoritative
+(owner/caller from the `AuthedContext`); create/run audited, each authorized step self-audited. **P11.3 in
+flight**, then the thin **P11.7** run-and-watch UI (the "usable" milestone).
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator
