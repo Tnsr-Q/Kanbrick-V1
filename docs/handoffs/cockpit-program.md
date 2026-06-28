@@ -69,7 +69,7 @@ behind a Phase-8 probe:
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **P10.1–P10.7 merged (#120–#126) — phase complete end to end** |
-| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton-first; **P11.1 skill schema/registry (ADR-0012) in flight** |
+| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton-first; **P11.1 merged (#127)** · P11.2 grant-lifecycle HTTP surface in flight |
 | P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | slices enumerated in epic |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
@@ -202,7 +202,15 @@ crate holds the `SKILL.md` manifest + parser (pure `kanbrick-core`, so it builds
 append-only `seq`, `MERGE`+`SET` upsert). The registry is the catalogue only — `ScopeGrants` stays the sole
 gate, wired in P11.2. Sequence: **P11.1 → P11.2** (grant + skill-authorization HTTP surface) **→ P11.3** (loop
 schema + run engine on the Scheduler, ADR-0013) **→ thin P11.7** run-and-watch UI (the "usable" milestone)
-**→ P11.4** keys / **P11.5** MCP / **P11.6** richer skill-library UI.
+**→ P11.4** keys / **P11.5** MCP / **P11.6** richer skill-library UI. **P11.1 merged as [#127].** **P11.2**
+(grant lifecycle HTTP surface) follows — and was split from the skill bridge for a tighter review: it adds
+`kanbrick-discovery` to `kanbrick-api` and exposes the `ScopeGrants` dual-gate over HTTP (`POST
+/me/scope-requests`, `…/{id}/approve|deny`, `GET /me/scope-requests/{id}`, `GET /me/scopes`, `POST
+/me/scopes/{id}/revoke`). Identity stays host-authoritative (the actor is the `AuthedContext`, never the
+body); `approve`/`deny` build the firm org-graph per-request via `DiscoveryGraph::from_store` (always fresh
+for the eligible-grantor chain check; caching deferred); the grant domain types aren't serializable so the
+responses use thin DTOs. The **skill-registry bridge** (publish/list + define-on-scope, connecting P11.1 to
+the gate) lands next as **P11.2b**, then P11.3. **P11.2 in flight.**
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator

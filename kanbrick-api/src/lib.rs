@@ -56,6 +56,7 @@ mod admission;
 mod caps;
 mod components;
 mod executor;
+mod grants;
 mod http_client;
 mod internal;
 mod messenger;
@@ -337,6 +338,18 @@ pub fn router(state: AppState) -> Router {
         .route("/me/messenger/send", post(messenger::send_message))
         .route("/me/messenger/log", get(messenger::message_log))
         .route("/me/components", get(components::list_components))
+        .route("/me/scope-requests", post(grants::create_scope_request))
+        .route("/me/scope-requests/{id}", get(grants::read_scope_request))
+        .route(
+            "/me/scope-requests/{id}/approve",
+            post(grants::approve_scope_request),
+        )
+        .route(
+            "/me/scope-requests/{id}/deny",
+            post(grants::deny_scope_request),
+        )
+        .route("/me/scopes", get(grants::list_scopes))
+        .route("/me/scopes/{id}/revoke", post(grants::revoke_scope))
         .with_state(state)
 }
 
