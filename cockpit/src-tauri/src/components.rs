@@ -30,7 +30,8 @@ const POLL_TICK: Duration = Duration::from_millis(150);
 type WatchRegistry = HashMap<Uuid, Arc<AtomicBool>>;
 
 /// One running component's status, mirroring `kanbrick-api`'s `ComponentStatus`.
-/// `clearance` is the serialized `ClearanceLevel` (`"L1"`..`"L5"`).
+/// `clearance` is the serialized `ClearanceLevel` (`"L1"`..`"L5"`); `kind` is the
+/// serialized `ComponentKind` (`"guest"` | `"sidecar"` | `"service"`, P10.7).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComponentStatus {
     pub name: String,
@@ -40,6 +41,7 @@ pub struct ComponentStatus {
     pub failed: u64,
     pub timed_out: u64,
     pub clearance: String,
+    pub kind: String,
 }
 
 /// Events streamed to the webview over the Channel (internally tagged on `event`,
@@ -180,7 +182,8 @@ mod tests {
             "completed": 3,
             "failed": 1,
             "timed_out": 0,
-            "clearance": "L3"
+            "clearance": "L3",
+            "kind": "guest"
         });
         let c: ComponentStatus = serde_json::from_value(json).unwrap();
         assert_eq!(c.name, "valuation");
@@ -188,6 +191,7 @@ mod tests {
         assert_eq!(c.completed, 3);
         assert_eq!(c.failed, 1);
         assert_eq!(c.clearance, "L3");
+        assert_eq!(c.kind, "guest");
     }
 
     #[test]

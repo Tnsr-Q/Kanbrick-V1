@@ -622,6 +622,60 @@ h1 {
   font-variant-numeric: tabular-nums;
 }
 
+/* Component kind row (P10.7): a kind tag beside the version. */
+.component-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: -8px;
+}
+
+.component-sub .component-version {
+  margin-top: 0;
+}
+
+.kind-tag {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.kind-tag-guest {
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.14);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.kind-tag-sidecar {
+  color: #6ee7b7;
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.kind-tag-service {
+  color: #fcd34d;
+  background: rgba(234, 179, 8, 0.12);
+  border-color: rgba(234, 179, 8, 0.3);
+}
+
+.no-metrics {
+  margin: 0;
+  font-size: 12px;
+  font-style: italic;
+}
+
+.component-card.kind-sidecar {
+  border-left: 2px solid rgba(16, 185, 129, 0.32);
+}
+
+.component-card.kind-service {
+  border-left: 2px solid rgba(234, 179, 8, 0.32);
+}
+
 .gauges {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
