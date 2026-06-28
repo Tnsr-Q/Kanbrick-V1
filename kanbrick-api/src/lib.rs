@@ -43,7 +43,7 @@ use axum::{Json, Router};
 use kanbrick_auth::{require_clearance, AuditLog, JwtAuthenticator, LoginService};
 use kanbrick_core::abi::GuestRequest;
 use kanbrick_core::{ClearanceLevel, Error, ErrorKind, FirmContext};
-use kanbrick_mesh::{AssetError, AssetStore, EventBus, MeshError, MeshRuntime};
+use kanbrick_mesh::{AssetError, AssetStore, EventBus, MeshError, MeshRuntime, Scheduler};
 use kanbrick_providers::{InMemoryKeyStore, ProviderKeyStore};
 use kanbrick_store::{
     bump_registry_generation, list_guest_policies, read_guest_policy, write_guest_policy,
@@ -59,6 +59,7 @@ mod executor;
 mod grants;
 mod http_client;
 mod internal;
+mod loops;
 mod messenger;
 mod metrics;
 mod provider_keys;
@@ -72,6 +73,7 @@ pub use executor::{
     ExecutorClient, ExecutorConfig, ExecutorError, RemoteHostServices, DEFAULT_RECONCILE_INTERVAL,
 };
 pub use internal::internal_router;
+pub use loops::LoopRunRegistry;
 
 /// Default location of the content-addressed asset volume in containers (#64).
 pub const DEFAULT_ASSET_DIR: &str = "/var/lib/kanbrick/assets";
@@ -191,6 +193,12 @@ pub struct AppState {
     /// Defaults to an in-memory store; the cockpit injects the Stronghold-backed
     /// backend (ADR-0009) via [`with_provider_keys`](AppState::with_provider_keys).
     pub provider_keys: Arc<dyn ProviderKeyStore>,
+    /// The loop run engine's scheduler (P11.3), wrapping the same `mesh` so loop
+    /// steps run as scheduled guest invocations with per-guest concurrency + timeouts.
+    pub scheduler: Arc<Scheduler>,
+    /// In-process loop-run history surfaced by `GET /me/loops/runs/{id}` (P11.3).
+    /// Durable run persistence is P11.5.
+    pub loop_runs: LoopRunRegistry,
 }
 
 impl AppState {
@@ -214,6 +222,8 @@ impl AppState {
         // (#114); durable history lives in the store, not this window.
         let bus = EventBus::with_capacity(EVENT_LOG_CAPACITY);
         let mesh = Arc::new(build_mesh(store.clone(), &assets, bus.clone())?);
+        // The loop run engine (P11.3) schedules guest invocations on this same mesh.
+        let scheduler = Arc::new(Scheduler::new(mesh.clone()));
         let admission = Arc::new(GuestAdmission::new(
             mesh.guests().into_iter().map(|g| g.name),
             config.admission,
@@ -246,6 +256,8 @@ impl AppState {
             internal_token,
             executor,
             provider_keys: Arc::new(InMemoryKeyStore::new()),
+            scheduler,
+            loop_runs: LoopRunRegistry::new(),
         })
     }
 
@@ -360,6 +372,13 @@ pub fn router(state: AppState) -> Router {
             post(skills::publish_skill).get(skills::browse_skills),
         )
         .route("/me/skills/{name}", get(skills::skill_history))
+        .route(
+            "/me/loops",
+            post(loops::create_loop_handler).get(loops::list_loops_handler),
+        )
+        .route("/me/loops/{id}", get(loops::get_loop_handler))
+        .route("/me/loops/{id}/run", post(loops::run_loop_handler))
+        .route("/me/loops/runs/{id}", get(loops::get_run_handler))
         .with_state(state)
 }
 
