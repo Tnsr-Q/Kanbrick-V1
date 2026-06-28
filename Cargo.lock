@@ -1676,6 +1676,7 @@ dependencies = [
  "http-body-util",
  "kanbrick-auth",
  "kanbrick-core",
+ "kanbrick-discovery",
  "kanbrick-mesh",
  "kanbrick-providers",
  "kanbrick-store",
