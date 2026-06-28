@@ -16,6 +16,7 @@
 //! * [`guest_policy`] — persisted per-guest version/clearance/asset policy (#64).
 //! * [`registry_meta`] — persisted registry generation counter (#69).
 //! * [`messenger_log`] — durable, append-only `(:MessengerMessage)` history (#114).
+//! * [`skill_registry`] — versioned `(:Skill)`/`(:SkillVersion)` registry (P11.1).
 
 pub mod guest_policy;
 pub mod messenger_log;
@@ -23,6 +24,7 @@ pub mod migrations;
 pub mod registry_meta;
 pub mod schema;
 pub mod seed;
+pub mod skill_registry;
 pub mod store;
 pub mod value;
 
@@ -34,6 +36,10 @@ pub use messenger_log::{count_messages, list_messages, persist_message};
 pub use migrations::{Migration, MigrationOutcome, Migrator};
 pub use registry_meta::{bump_registry_generation, read_registry_generation};
 pub use schema::{CompanyNode, PersonNode, SegmentNode};
+pub use skill_registry::{
+    count_skill_versions, latest_skill_version, list_skill_versions, list_skills,
+    publish_skill_version, SkillVersionRecord,
+};
 pub use store::Store;
 pub use value::Params;
 

@@ -1,0 +1,17 @@
+[package]
+name = "kanbrick-loops"
+description = "Skill/loop registry + run-engine domain model for the L5 Cockpit (Phase 11)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The SKILL.md manifest model + parser are pure domain logic over the shared
+# clearance vocabulary — deliberately no store/HTTP/async stack, so this crate
+# stays out of the sparrowdb dependency graph and its parser builds and tests on
+# its own (the run engine + loop compiler land in later P11 slices).
+kanbrick-core.workspace = true
+serde = { workspace = true }
+thiserror.workspace = true

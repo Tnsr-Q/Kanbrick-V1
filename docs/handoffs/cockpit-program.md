@@ -68,7 +68,8 @@ behind a Phase-8 probe:
 | P7 — Cockpit Shell | [#78](https://github.com/Tnsr-Q/Kanbrick-V1/issues/78) | 2 | **built + CI-gated** (#87–#92) |
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
-| P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **P10.1–P10.6 merged (#120–#125)** · P10.7 service introspection in flight — **phase all but complete** |
+| P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **P10.1–P10.7 merged (#120–#126) — phase complete end to end** |
+| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton-first; **P11.1 skill schema/registry (ADR-0012) in flight** |
 | P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | slices enumerated in epic |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
@@ -184,8 +185,24 @@ custody, plus the executor forwarder + internal-RPC surface when the control-pla
 so the service set reflects the live `AppState` configuration). Every row carries a `kind` discriminator
 (`guest` | `sidecar` | `service`, names deduped in authority order guest > sidecar > service), mirrored 1:1
 to the cockpit TS `ComponentKind`; the visualizer groups the three kinds, badges each, and shows live gauges
-only for guests. `tsc --strict` + `vite build` green. **P10.7 in flight — Phase 10 (Messenger + Visualizer,
-Req 2.1/2.2) then complete end to end.**
+only for guests. `tsc --strict` + `vite build` green. **P10.7 merged as [#126] — Phase 10 (Messenger +
+Visualizer, Req 2.1/2.2) complete end to end.**
+
+**P11 in flight (2026-06-28):** the Skill/Loop Ecosystem (Req 2.3/2.5). The two hardest pieces already
+exist, built + tested — the **run engine** (`kanbrick-mesh::Scheduler`: `schedule_with_retry`/
+`schedule_interval`/`on_event`/`status`/`wait`, per-guest concurrency + timeouts) and the **permission
+spine** (`kanbrick-discovery::ScopeGrants` dual-gate + the per-scope `Skill` primitive) — so P11 is mostly
+wiring + the skill/loop schema + UI. Operator decisions (this session): **walking-skeleton-first** (make one
+loop of guest-steps runnable through the real grant gate + a thin run-and-watch UI, then deepen);
+a **skill = a versioned, grant-gated wrapper over a WASM guest** (the loop *step* is the polymorphic unit —
+guest now; provider/MCP later); first usable cut is **guest-step loops only** (MCP tools P11.5 + per-step
+keys P11.4 deferred). **P11.1** (skill schema/registry, ADR-0012) lands first: a new **`kanbrick-loops`**
+crate holds the `SKILL.md` manifest + parser (pure `kanbrick-core`, so it builds + tests standalone), and
+`kanbrick-store` (`skill_registry`) persists versioned `(:Skill)`/`(:SkillVersion)` nodes (ADR-0001 dialect,
+append-only `seq`, `MERGE`+`SET` upsert). The registry is the catalogue only — `ScopeGrants` stays the sole
+gate, wired in P11.2. Sequence: **P11.1 → P11.2** (grant + skill-authorization HTTP surface) **→ P11.3** (loop
+schema + run engine on the Scheduler, ADR-0013) **→ thin P11.7** run-and-watch UI (the "usable" milestone)
+**→ P11.4** keys / **P11.5** MCP / **P11.6** richer skill-library UI.
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator
