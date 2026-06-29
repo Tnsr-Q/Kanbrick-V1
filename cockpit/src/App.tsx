@@ -12,6 +12,7 @@ import Spikes from "./Spikes";
 import Providers from "./Providers";
 import Visualizer from "./Visualizer";
 import Messenger from "./Messenger";
+import LoopRunner from "./LoopRunner";
 import "./App.css";
 
 const SIDECAR_COPY = {
@@ -33,7 +34,7 @@ export default function App() {
   const [sidecar, setSidecar] = useState<SidecarStatus>({ state: "starting" });
   const [auth, setAuth] = useState<Auth>("unknown");
   const [view, setView] = useState<
-    "main" | "spikes" | "providers" | "visualizer" | "messenger"
+    "main" | "spikes" | "providers" | "visualizer" | "messenger" | "loops"
   >("main");
 
   useEffect(() => {
@@ -106,6 +107,15 @@ export default function App() {
     );
   }
 
+  // P11.7 loop run-and-watch — its own wider surface.
+  if (view === "loops") {
+    return (
+      <main className="splash spikes-view">
+        <LoopRunner onBack={() => setView("main")} />
+      </main>
+    );
+  }
+
   // P8.5 (#97) frontend de-risk spike — a separate, wider surface for ADR-0011.
   if (view === "spikes") {
     return (
@@ -163,6 +173,10 @@ export default function App() {
               <span aria-hidden="true">·</span>
               <button className="link-btn" onClick={() => setView("messenger")}>
                 Messenger (P10.3)
+              </button>
+              <span aria-hidden="true">·</span>
+              <button className="link-btn" onClick={() => setView("loops")}>
+                Loops (P11.7)
               </button>
             </>
           )}
