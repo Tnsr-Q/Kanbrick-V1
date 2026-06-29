@@ -15,7 +15,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chrono::Duration;
 use http_body_util::BodyExt;
-use kanbrick_api::{router, AppState, ProviderFactory};
+use kanbrick_api::{router, AppState, InvocationCaps, McpBridge, ProviderFactory};
 use kanbrick_auth::{JwtAuthenticator, LoginService};
 use kanbrick_providers::{
     ChatProvider, ChatRequest, ChatResponse, ProviderError, ProviderKind, Role, StopReason, Usage,
@@ -740,4 +740,241 @@ async fn creating_a_provider_step_without_a_model_is_400() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ── P11.5 — MCP tool-call steps (host-minted cap; step names only the tool) ───
+
+/// One recorded `call_tool`: what the bridge received, plus the identity the opaque
+/// cap resolved to **host-side**. If `resolved_email` is the caller, the step named
+/// only the tool — identity rode the cap, never the step body.
+#[derive(Clone)]
+struct ToolCall {
+    resolved_email: Option<String>,
+    tool: String,
+    args: Value,
+}
+
+/// An [`McpBridge`] that records every call and resolves the opaque cap against the
+/// **same** `InvocationCaps` the host minted it from (so the test can prove the cap
+/// maps to the caller). A real bridge would relay the cap to the sidecar instead.
+#[derive(Clone)]
+struct RecordingBridge {
+    caps: Arc<InvocationCaps>,
+    seen: Arc<Mutex<Vec<ToolCall>>>,
+}
+
+impl McpBridge for RecordingBridge {
+    fn call_tool(&self, cap: &str, tool: &str, args: &Value) -> Result<Value, String> {
+        // Resolve while the cap is live (the engine revokes it the instant we return).
+        let resolved_email = self.caps.resolve(cap).map(|c| c.email);
+        self.seen.lock().unwrap().push(ToolCall {
+            resolved_email,
+            tool: tool.to_string(),
+            args: args.clone(),
+        });
+        Ok(json!({ "ok": true, "tool": tool }))
+    }
+}
+
+/// An [`McpBridge`] that always errors — stands in for an unknown/failed tool.
+struct FailingBridge;
+
+impl McpBridge for FailingBridge {
+    fn call_tool(&self, _cap: &str, tool: &str, _args: &Value) -> Result<Value, String> {
+        Err(format!("unknown tool {tool}"))
+    }
+}
+
+#[tokio::test]
+async fn a_tool_step_runs_to_completion_with_the_default_stub() {
+    let (_d, app) = app(); // default StubMcpBridge — no network, canned echo.
+    let elena = login(&app, ELENA, "pw2").await;
+    let peter = login(&app, PETER, "pw4").await;
+    let scope_id = approved_scope(&app, &elena, &peter).await;
+    // The skill provides authorization + scope; tool_ref overrides execution.
+    publish_and_bind(&app, &elena, &peter, &scope_id, "fetch", "reporting", "L1").await;
+
+    let created = post(
+        &app,
+        "/me/loops",
+        Some(&elena),
+        json!({ "name": "tool-loop", "steps": [
+            { "skill_name": "fetch", "scope_id": scope_id,
+              "tool_ref": { "tool": "web.search", "args": { "q": "kanbrick" } } } ]}),
+    )
+    .await
+    .1;
+    // The definition surfaces the tool selection + parsed args (no credential anywhere).
+    assert_eq!(created["steps"][0]["tool"], "web.search");
+    assert_eq!(created["steps"][0]["tool_args"]["q"], "kanbrick");
+    assert!(created["steps"][0]["provider"].is_null());
+    let id = created["loop_id"].as_str().unwrap().to_string();
+
+    let run = post(
+        &app,
+        &format!("/me/loops/{id}/run"),
+        Some(&elena),
+        json!({ "input": "go" }),
+    )
+    .await
+    .1;
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    let final_run = poll_run(&app, &elena, &run_id).await;
+    assert_eq!(final_run["status"], "completed");
+    assert_eq!(final_run["steps"][0]["status"], "completed");
+}
+
+#[tokio::test]
+async fn the_host_mints_a_caller_bound_cap_for_a_tool_step() {
+    let (_d, store, jwt) = seeded();
+    let state = AppState::new(store, jwt).unwrap();
+    // Share the host's capability registry with the recording bridge so it can prove
+    // the opaque cap resolves to the caller (a real sidecar cannot — it has no caps).
+    let caps = state.caps.clone();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let bridge: Arc<dyn McpBridge> = Arc::new(RecordingBridge {
+        caps: caps.clone(),
+        seen: seen.clone(),
+    });
+    let app = router(state.with_mcp_bridge(bridge));
+
+    let elena = login(&app, ELENA, "pw2").await;
+    let peter = login(&app, PETER, "pw4").await;
+    let scope_id = approved_scope(&app, &elena, &peter).await;
+    publish_and_bind(&app, &elena, &peter, &scope_id, "fetch", "reporting", "L1").await;
+
+    let created = post(
+        &app,
+        "/me/loops",
+        Some(&elena),
+        json!({ "name": "rec-tool", "steps": [
+            { "skill_name": "fetch", "scope_id": scope_id,
+              "tool_ref": { "tool": "web.search", "args": { "q": "kanbrick" } } } ]}),
+    )
+    .await
+    .1;
+    let id = created["loop_id"].as_str().unwrap().to_string();
+    let run = post(
+        &app,
+        &format!("/me/loops/{id}/run"),
+        Some(&elena),
+        json!({ "input": "go" }),
+    )
+    .await
+    .1;
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    let final_run = poll_run(&app, &elena, &run_id).await;
+    assert_eq!(final_run["status"], "completed");
+
+    // The bridge saw the OPAQUE cap (resolving host-side to elena), the tool, and the
+    // args — static args plus the piped payload under "input". Identity is never in
+    // the step body; it rides the cap, which only the host can resolve.
+    let recorded = seen.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1, "one tool call");
+    assert_eq!(
+        recorded[0].resolved_email.as_deref(),
+        Some(ELENA),
+        "the host minted a cap bound to the caller; the bridge resolves it host-side"
+    );
+    assert_eq!(recorded[0].tool, "web.search");
+    assert_eq!(
+        recorded[0].args["q"], "kanbrick",
+        "static tool args preserved"
+    );
+    assert_eq!(
+        recorded[0].args["input"], "go",
+        "the piped payload rides under input"
+    );
+}
+
+#[tokio::test]
+async fn a_tool_step_whose_tool_errors_fails_the_run() {
+    let (_d, store, jwt) = seeded();
+    let app = router(
+        AppState::new(store, jwt)
+            .unwrap()
+            .with_mcp_bridge(Arc::new(FailingBridge)),
+    );
+    let elena = login(&app, ELENA, "pw2").await;
+    let peter = login(&app, PETER, "pw4").await;
+    let scope_id = approved_scope(&app, &elena, &peter).await;
+    publish_and_bind(&app, &elena, &peter, &scope_id, "fetch", "reporting", "L1").await;
+
+    let created = post(
+        &app,
+        "/me/loops",
+        Some(&elena),
+        json!({ "name": "bad-tool", "steps": [
+            { "skill_name": "fetch", "scope_id": scope_id,
+              "tool_ref": { "tool": "missing.tool" } } ]}),
+    )
+    .await
+    .1;
+    let id = created["loop_id"].as_str().unwrap().to_string();
+    let run = post(
+        &app,
+        &format!("/me/loops/{id}/run"),
+        Some(&elena),
+        json!({ "input": "x" }),
+    )
+    .await
+    .1;
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    let final_run = poll_run(&app, &elena, &run_id).await;
+    assert_eq!(final_run["status"], "failed");
+    assert_eq!(final_run["steps"][0]["status"], "failed");
+    assert!(final_run["steps"][0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("unknown tool"));
+}
+
+#[tokio::test]
+async fn creating_a_tool_step_with_an_empty_tool_is_400() {
+    let (_d, app) = app();
+    let elena = login(&app, ELENA, "pw2").await;
+    let (status, err) = post(
+        &app,
+        "/me/loops",
+        Some(&elena),
+        json!({ "name": "bad", "steps": [
+            { "skill_name": "s", "scope_id": "sc", "tool_ref": { "tool": "  " } } ]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(err["error"]["kind"], "invalid_request");
+}
+
+#[tokio::test]
+async fn creating_a_tool_step_with_non_object_args_is_400() {
+    let (_d, app) = app();
+    let elena = login(&app, ELENA, "pw2").await;
+    let (status, _) = post(
+        &app,
+        "/me/loops",
+        Some(&elena),
+        json!({ "name": "bad", "steps": [
+            { "skill_name": "s", "scope_id": "sc",
+              "tool_ref": { "tool": "t", "args": [1, 2, 3] } } ]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn creating_a_step_with_both_provider_and_tool_is_400() {
+    let (_d, app) = app();
+    let elena = login(&app, ELENA, "pw2").await;
+    let (status, err) = post(
+        &app,
+        "/me/loops",
+        Some(&elena),
+        json!({ "name": "bad", "steps": [
+            { "skill_name": "s", "scope_id": "sc",
+              "provider_ref": { "provider": "openai", "model": "gpt-4o" },
+              "tool_ref": { "tool": "web.search" } } ]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(err["error"]["kind"], "invalid_request");
 }
