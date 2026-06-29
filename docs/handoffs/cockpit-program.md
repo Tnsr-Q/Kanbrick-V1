@@ -69,7 +69,7 @@ behind a Phase-8 probe:
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **P10.1–P10.7 merged (#120–#126) — phase complete end to end** |
-| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton **complete** (#127–#131); P11.4 provider steps (#132, ADR-0019); P11.5 MCP tool steps (#134, ADR-0020); P11.6 authoring/library/loop-builder UI (#135). **Deepening half complete end to end** — only P11.8 (skill-publish trust gate, **[HITL]**) remains |
+| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton **complete** (#127–#131); P11.4 provider steps (#132, ADR-0019); P11.5 MCP tool steps (#134, ADR-0020); P11.6 authoring/library/loop-builder UI (#135); **P11.8 skill-publish trust gate in flight** (ADR-0021) — closes the phase |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
 | P14 — Multi-Tenant | [#85](https://github.com/Tnsr-Q/Kanbrick-V1/issues/85) | 7 | slices enumerated in epic |
@@ -276,8 +276,20 @@ steps — each a guest XOR provider (`provider_ref {provider, model}`) XOR mcp-t
 ride the cockpit CI. **P11.6 merged as [#135] — the deepening half of Phase 11 is complete end to end**: author a
 SKILL.md → publish to the versioned registry → bind onto a grant-gated scope → compose a `(:Loop)` of steps
 (guest · provider · mcp-tool) → run through the real `authorize_skill` gate → watch each step live, all usable in
-the Cockpit. The only remaining P11 slice is **P11.8** (skill-publish dual-gate trust review, **[HITL]**), which
-also closes the P11.2b cross-author re-publish gap — surfaced to the operator, not pre-empted.
+the Cockpit. **P11.8** (skill-publish trust gate, ADR-0021, **[HITL] — operator chose bind-time enforcement +
+author-pinned names + a Cockpit reviewer UI this session**) closes the phase. Each `(:SkillVersion)` carries a
+`review_status` (pending|approved|rejected, reset to pending on every publish) + `reviewed_by`/`reviewed_at`, and
+each `(:Skill)` an `owner` (its first publisher). **Bind-time gate:** an edition is bindable by *others* only once
+an eligible lead approves it — the **author** may bind/run their own skill freely (solo iteration) and an L5 may
+always bind; a missing status reads as pending (**fail-closed**). **Dual-gate review:** `POST
+/me/skill-reviews/{name}/{version}` requires the reviewer to clear L4 **and** be an `eligible_grantor` over the
+edition's *author* (management chain, or L5) and forbids self-review; `GET /me/skill-reviews` is the L4-gated
+queue. **Author-pinning** closes the P11.2b gap: only a name's owner (or an L5) may publish further editions —
+a different author is refused at publish (403), so no one can overwrite another's `source`/`guest`/`min_clearance`.
+A Cockpit reviewer surface (pending queue + approve/reject) ships alongside, and the library shows each edition's
+review status. Identity stays host-side throughout (ADR-0002/0016). Already-bound grants are unaffected (the run
+gate reads the `(:Skill)` snapshot, not the registry). **P11.8 in flight — Phase 11 (Skill/Loop Ecosystem,
+Req 2.3/2.5) complete once it merges.**
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator
@@ -317,7 +329,8 @@ epic **#79**, so closing a probe surfaces exactly which slices to open next.
 0014 single WASM runtime · 0015 tenancy topology (per-workstation CP + central queue) ·
 0016 Cockpit IPC auth contract · 0017 BYO-AI egress allowlist+DLP · 0018 ProjectScope
 file/function granularity · 0019 loop provider steps (host-injected key, model-only `provider_ref`) ·
-0020 loop MCP tool-call steps (managed-sidecar bridge, capability passthrough, injected seam).
+0020 loop MCP tool-call steps (managed-sidecar bridge, capability passthrough, injected seam) ·
+0021 skill-publish trust gate (bind-time lead review via `eligible_grantor`; author-pinned names).
 Each ADR is authored alongside its implementing slice (the repo's convention — see ADR-0008 landing
 with Track G).
 

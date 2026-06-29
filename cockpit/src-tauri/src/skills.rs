@@ -30,6 +30,16 @@ pub struct SkillVersion {
     pub source: String,
     pub created_at: String,
     pub seq: i64,
+    /// Publish trust-gate state (P11.8): `"pending"|"approved"|"rejected"`; `None`
+    /// (a pre-P11.8 edition / absent) is treated as pending by the UI.
+    #[serde(default)]
+    pub review_status: Option<String>,
+    /// The lead who decided the review; `None`/empty until decided.
+    #[serde(default)]
+    pub reviewed_by: Option<String>,
+    /// When the review was decided; `None`/empty until decided.
+    #[serde(default)]
+    pub reviewed_at: Option<String>,
 }
 
 /// A skill edition bound onto a scope, mirroring `kanbrick-api`'s `SkillDto`.
@@ -72,6 +82,14 @@ struct BindBody {
     skill_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<String>,
+}
+
+/// Body for `POST /me/skill-reviews/{name}/{version}` — a lead's decision (P11.8).
+#[derive(Serialize)]
+struct ReviewBody {
+    decision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 
 /// A 401 clears the host session so the UI falls back to login.
@@ -197,6 +215,60 @@ pub async fn list_scopes(app: AppHandle, project: String) -> Result<Vec<GrantedS
         .map_err(|e| format!("unexpected scopes response: {e}"))
 }
 
+/// `invoke('list_skill_reviews')` — the pending publish-review queue (P11.8) via
+/// `GET /me/skill-reviews`. L4-gated server-side; a non-reviewer gets a `403`, which
+/// the UI uses to hide the reviewer panel.
+#[tauri::command]
+pub async fn list_skill_reviews(app: AppHandle) -> Result<Vec<SkillVersion>, String> {
+    let response = authed_get(&app, "/me/skill-reviews").await?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(session_expired(&app));
+    }
+    if !response.status().is_success() {
+        return Err(format!(
+            "could not load the review queue ({})",
+            response.status()
+        ));
+    }
+    response
+        .json::<Vec<SkillVersion>>()
+        .await
+        .map_err(|e| format!("unexpected reviews response: {e}"))
+}
+
+/// `invoke('review_skill', { name, version, decision, reason })` — approve or reject a
+/// published edition via `POST /me/skill-reviews/{name}/{version}` (P11.8). The host
+/// injects the Bearer; the eligibility check (reviewer over the author, no self-review)
+/// is enforced server-side. Returns the updated edition.
+#[tauri::command]
+pub async fn review_skill(
+    app: AppHandle,
+    name: String,
+    version: String,
+    decision: String,
+    reason: Option<String>,
+) -> Result<SkillVersion, String> {
+    let body = ReviewBody { decision, reason };
+    let response = authed_post(&app, &format!("/me/skill-reviews/{name}/{version}"), &body).await?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(session_expired(&app));
+    }
+    if !response.status().is_success() {
+        let status = response.status();
+        let message = response
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+            .unwrap_or_else(|| format!("could not record the review ({status})"));
+        return Err(message);
+    }
+    response
+        .json::<SkillVersion>()
+        .await
+        .map_err(|e| format!("unexpected review response: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,13 +284,36 @@ mod tests {
             "description": "a loop step",
             "source": "elena.ruiz@kanbrick.com",
             "created_at": "2026-06-29T00:00:00+00:00",
-            "seq": 3
+            "seq": 3,
+            "review_status": "approved",
+            "reviewed_by": "peter.nash@kanbrick.com",
+            "reviewed_at": "2026-06-29T01:00:00+00:00"
         });
         let s: SkillVersion = serde_json::from_value(json).unwrap();
         assert_eq!(s.skill_name, "daily-report");
         assert_eq!(s.min_clearance, "L1");
         assert_eq!(s.source, "elena.ruiz@kanbrick.com");
         assert_eq!(s.seq, 3);
+        assert_eq!(s.review_status.as_deref(), Some("approved"));
+        assert_eq!(s.reviewed_by.as_deref(), Some("peter.nash@kanbrick.com"));
+    }
+
+    #[test]
+    fn skill_version_tolerates_an_absent_review_status() {
+        // A pre-P11.8 edition omits the review fields; they default to None.
+        let json = serde_json::json!({
+            "skill_name": "legacy",
+            "version": "1.0.0",
+            "guest": "valuation",
+            "min_clearance": "L3",
+            "description": "",
+            "source": "elena.ruiz@kanbrick.com",
+            "created_at": "2026-06-29T00:00:00+00:00",
+            "seq": 1
+        });
+        let s: SkillVersion = serde_json::from_value(json).unwrap();
+        assert_eq!(s.review_status, None);
+        assert_eq!(s.reviewed_by, None);
     }
 
     #[test]

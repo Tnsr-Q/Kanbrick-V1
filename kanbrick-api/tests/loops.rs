@@ -27,7 +27,8 @@ use tower::ServiceExt;
 const SECRET: &[u8] = b"loops-suite-secret";
 
 const ELENA: &str = "elena.ruiz@kanbrick.com"; // L2 — loop owner / scope grantee
-const PETER: &str = "peter.nash@kanbrick.com"; // L4 — grantor + skill publisher
+const PETER: &str = "peter.nash@kanbrick.com"; // L4 — grantor + skill publisher (author)
+const TRACY: &str = "tracy.brittcool@kanbrick.com"; // L5 — cofounder; approves any skill
 
 /// Seed the firm graph + financials and provision the elena/peter logins.
 fn seeded() -> (tempfile::TempDir, Store, JwtAuthenticator) {
@@ -53,6 +54,7 @@ fn seeded() -> (tempfile::TempDir, Store, JwtAuthenticator) {
         let svc = LoginService::new(&store, &jwt);
         svc.set_password(ELENA, "pw2").unwrap();
         svc.set_password(PETER, "pw4").unwrap();
+        svc.set_password(TRACY, "pw5").unwrap();
     }
     (dir, store, jwt)
 }
@@ -170,6 +172,18 @@ async fn publish_and_bind(
     )
     .await;
     assert_eq!(s, StatusCode::OK, "publish failed");
+    // P11.8 trust gate: a published edition is bindable by *others* only once an
+    // eligible lead approves it. Tracy (L5 cofounder) is eligible over any author, and
+    // the skill_md helper always publishes version 1.0.0.
+    let tracy = login(app, TRACY, "pw5").await;
+    let (s, _) = post(
+        app,
+        &format!("/me/skill-reviews/{name}/1.0.0"),
+        Some(&tracy),
+        json!({ "decision": "approve" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "approve failed");
     let (s, _) = post(
         app,
         &format!("/me/scopes/{scope_id}/skills"),

@@ -64,6 +64,8 @@ pub fn run() {
             skills::skill_history,
             skills::bind_skill,
             skills::list_scopes,
+            skills::list_skill_reviews,
+            skills::review_skill,
         ])
         .setup(|app| {
             // Spawn + health-gate the API sidecar; readiness is pushed to the

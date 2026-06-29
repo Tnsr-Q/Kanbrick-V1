@@ -24,6 +24,7 @@ const SECRET: &[u8] = b"skills-suite-secret";
 const ELENA: &str = "elena.ruiz@kanbrick.com"; // L2 — requester / scope owner
 const TYLER: &str = "tyler.begemann@kanbrick.com"; // L3 — can publish; not an owner
 const PETER: &str = "peter.nash@kanbrick.com"; // L4 — in Elena's chain → eligible grantor
+const ANDREA: &str = "andrea.lewis@kanbrick.com"; // L4 — peer of Peter, NOT in his chain
 const TRACY: &str = "tracy.brittcool@kanbrick.com"; // L5 (CEO) — cofounder override
 
 fn app() -> (tempfile::TempDir, axum::Router) {
@@ -41,6 +42,7 @@ fn app() -> (tempfile::TempDir, axum::Router) {
         svc.set_password(ELENA, "pw2").unwrap();
         svc.set_password(TYLER, "pw3").unwrap();
         svc.set_password(PETER, "pw4").unwrap();
+        svc.set_password(ANDREA, "pw4b").unwrap();
         svc.set_password(TRACY, "pw5").unwrap();
     }
     (dir, router(AppState::new(store, jwt).unwrap()))
@@ -161,6 +163,42 @@ async fn approved_scope(app: &axum::Router, elena: &str, peter: &str) -> String 
     granted["id"].as_str().unwrap().to_string()
 }
 
+/// A scope **owned by Peter**: he requests it; Tracy (L5) approves. Used to exercise
+/// an author binding their own (unreviewed) skill onto their own scope.
+async fn peter_scope(app: &axum::Router, peter: &str, tracy: &str) -> String {
+    let req = post(
+        app,
+        "/me/scope-requests",
+        Some(peter),
+        json!({ "project": "peters-project", "companies": ["JMTS"], "justification": "mine" }),
+    )
+    .await
+    .1;
+    let id = req["id"].as_str().unwrap().to_string();
+    let granted = post(
+        app,
+        &format!("/me/scope-requests/{id}/approve"),
+        Some(tracy),
+        json!({ "ttl_days": 30 }),
+    )
+    .await
+    .1;
+    granted["id"].as_str().unwrap().to_string()
+}
+
+/// Approve `name@version` as `reviewer` (an eligible lead), so a non-author may bind
+/// it (the P11.8 trust gate).
+async fn approve(app: &axum::Router, reviewer: &str, name: &str, version: &str) {
+    let (status, _) = post(
+        app,
+        &format!("/me/skill-reviews/{name}/{version}"),
+        Some(reviewer),
+        json!({ "decision": "approve" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "approve {name}@{version} failed");
+}
+
 #[tokio::test]
 async fn unauthenticated_publish_is_rejected() {
     let (_d, app) = app();
@@ -256,8 +294,10 @@ async fn an_owner_binds_a_published_edition_onto_their_scope() {
     let elena = login(&app, ELENA, "pw2").await; // L2 — owner
     let peter = login(&app, PETER, "pw4").await; // L4 — grantor + publisher
 
+    let tracy = login(&app, TRACY, "pw5").await;
     let scope_id = approved_scope(&app, &elena, &peter).await;
     publish(&app, &peter, "deal-modeling", "1.0.0", "L3").await;
+    approve(&app, &tracy, "deal-modeling", "1.0.0").await; // trust gate (P11.8)
 
     // Elena owns the scope, so she may bind — even though the skill needs L3 to
     // *run* and she is only L2. Define ≠ run: no clearance re-check here.
@@ -369,8 +409,10 @@ async fn an_l4_reviewer_can_read_a_scopes_skills() {
     let (_d, app) = app();
     let elena = login(&app, ELENA, "pw2").await;
     let peter = login(&app, PETER, "pw4").await; // L4 — not the owner
+    let tracy = login(&app, TRACY, "pw5").await;
     let scope_id = approved_scope(&app, &elena, &peter).await;
     publish(&app, &peter, "deal-modeling", "1.0.0", "L3").await;
+    approve(&app, &tracy, "deal-modeling", "1.0.0").await; // trust gate (P11.8)
     post(
         &app,
         &format!("/me/scopes/{scope_id}/skills"),
@@ -409,11 +451,13 @@ async fn an_owner_can_bind_a_specific_published_version() {
     let (_d, app) = app();
     let elena = login(&app, ELENA, "pw2").await;
     let peter = login(&app, PETER, "pw4").await;
+    let tracy = login(&app, TRACY, "pw5").await;
     let scope_id = approved_scope(&app, &elena, &peter).await;
 
     // Two editions: the older needs L2, the newer L4.
     publish(&app, &peter, "deal-modeling", "1.0.0", "L2").await;
     publish(&app, &peter, "deal-modeling", "2.0.0", "L4").await;
+    approve(&app, &tracy, "deal-modeling", "1.0.0").await; // approve the edition we bind
 
     // Pin the older edition explicitly; its clearance floor must be the bound one.
     let (status, skill) = post(
@@ -428,4 +472,174 @@ async fn an_owner_can_bind_a_specific_published_version() {
         skill["required_clearance"], "L2",
         "the pinned edition's clearance, not the latest"
     );
+}
+
+// ── P11.8 publish trust gate + author-pinning (ADR-0021) ─────────────────────
+
+#[tokio::test]
+async fn a_pending_edition_cannot_be_bound_by_a_non_author() {
+    let (_d, app) = app();
+    let elena = login(&app, ELENA, "pw2").await; // owner, but not the author
+    let peter = login(&app, PETER, "pw4").await; // author
+    let scope_id = approved_scope(&app, &elena, &peter).await;
+    publish(&app, &peter, "deal-modeling", "1.0.0", "L3").await; // unreviewed
+
+    let (status, err) = post(
+        &app,
+        &format!("/me/scopes/{scope_id}/skills"),
+        Some(&elena),
+        json!({ "skill_name": "deal-modeling" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(err["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not yet approved"));
+}
+
+#[tokio::test]
+async fn an_approved_edition_can_be_bound_by_an_owner() {
+    let (_d, app) = app();
+    let elena = login(&app, ELENA, "pw2").await;
+    let peter = login(&app, PETER, "pw4").await;
+    let tracy = login(&app, TRACY, "pw5").await;
+    let scope_id = approved_scope(&app, &elena, &peter).await;
+    publish(&app, &peter, "deal-modeling", "1.0.0", "L3").await;
+    approve(&app, &tracy, "deal-modeling", "1.0.0").await;
+
+    let (status, _) = post(
+        &app,
+        &format!("/me/scopes/{scope_id}/skills"),
+        Some(&elena),
+        json!({ "skill_name": "deal-modeling" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "approval makes it bindable by others"
+    );
+}
+
+#[tokio::test]
+async fn the_author_can_bind_their_own_unreviewed_skill() {
+    let (_d, app) = app();
+    let peter = login(&app, PETER, "pw4").await; // author + scope owner
+    let tracy = login(&app, TRACY, "pw5").await;
+    let scope_id = peter_scope(&app, &peter, &tracy).await;
+    publish(&app, &peter, "self-skill", "1.0.0", "L3").await; // pending, never reviewed
+
+    // No skill approval — but Peter authors it and owns the scope (solo iteration).
+    let (status, skill) = post(
+        &app,
+        &format!("/me/scopes/{scope_id}/skills"),
+        Some(&peter),
+        json!({ "skill_name": "self-skill" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the author may bind their own skill"
+    );
+    assert_eq!(skill["name"], "self-skill");
+}
+
+#[tokio::test]
+async fn a_different_author_cannot_republish_an_owned_name() {
+    let (_d, app) = app();
+    let peter = login(&app, PETER, "pw4").await; // first publisher → owner
+    let tyler = login(&app, TYLER, "pw3").await; // L3, a different author
+    let (s, _) = publish(&app, &peter, "deal-modeling", "1.0.0", "L3").await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Tyler clears the L3 publish floor but does not own the name → 403, closing the
+    // cross-author overwrite gap.
+    let (status, err) = publish(&app, &tyler, "deal-modeling", "2.0.0", "L3").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(err["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("owned by"));
+}
+
+#[tokio::test]
+async fn the_owner_and_an_l5_may_republish_a_name() {
+    let (_d, app) = app();
+    let peter = login(&app, PETER, "pw4").await;
+    let tracy = login(&app, TRACY, "pw5").await;
+    publish(&app, &peter, "deal-modeling", "1.0.0", "L3").await;
+    // The owner publishes a further edition.
+    let (s1, _) = publish(&app, &peter, "deal-modeling", "1.1.0", "L4").await;
+    assert_eq!(s1, StatusCode::OK, "the owner may re-publish");
+    // An L5 cofounder may publish onto someone else's name (override).
+    let (s2, _) = publish(&app, &tracy, "deal-modeling", "1.2.0", "L4").await;
+    assert_eq!(s2, StatusCode::OK, "an L5 may publish any name");
+}
+
+#[tokio::test]
+async fn an_author_cannot_review_their_own_skill() {
+    let (_d, app) = app();
+    let peter = login(&app, PETER, "pw4").await; // L4, but the author
+    publish(&app, &peter, "deal-modeling", "1.0.0", "L3").await;
+    let (status, _) = post(
+        &app,
+        "/me/skill-reviews/deal-modeling/1.0.0",
+        Some(&peter),
+        json!({ "decision": "approve" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "self-review is forbidden");
+}
+
+#[tokio::test]
+async fn an_l4_outside_the_authors_chain_cannot_approve() {
+    let (_d, app) = app();
+    let peter = login(&app, PETER, "pw4").await; // author
+    let andrea = login(&app, ANDREA, "pw4b").await; // L4 peer, not in Peter's chain
+    publish(&app, &peter, "deal-modeling", "1.0.0", "L3").await;
+    let (status, _) = post(
+        &app,
+        "/me/skill-reviews/deal-modeling/1.0.0",
+        Some(&andrea),
+        json!({ "decision": "approve" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "clearance alone is not enough — the reviewer must be over the author"
+    );
+}
+
+#[tokio::test]
+async fn the_review_queue_is_gated_and_reflects_decisions() {
+    let (_d, app) = app();
+    let elena = login(&app, ELENA, "pw2").await; // L2 — below the review floor
+    let peter = login(&app, PETER, "pw4").await; // L4 — may browse the queue
+    let tracy = login(&app, TRACY, "pw5").await;
+    publish(&app, &peter, "deal-modeling", "1.0.0", "L3").await;
+
+    // Below L4 cannot see the review queue.
+    let (status, _) = get(&app, "/me/skill-reviews", &elena).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // A reviewer sees the pending edition.
+    let (status, queue) = get(&app, "/me/skill-reviews", &peter).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(queue.as_array().unwrap().len(), 1);
+    assert_eq!(queue[0]["skill_name"], "deal-modeling");
+    assert_eq!(queue[0]["review_status"], "pending");
+
+    // After Tracy approves, it leaves the queue and reads back approved.
+    approve(&app, &tracy, "deal-modeling", "1.0.0").await;
+    let (_s, queue) = get(&app, "/me/skill-reviews", &peter).await;
+    assert!(
+        queue.as_array().unwrap().is_empty(),
+        "approved → not queued"
+    );
+    let (_s, history) = get(&app, "/me/skills/deal-modeling", &peter).await;
+    assert_eq!(history[0]["review_status"], "approved");
+    assert_eq!(history[0]["reviewed_by"], TRACY);
 }
