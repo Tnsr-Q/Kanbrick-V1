@@ -16,8 +16,10 @@
 //! 1. calls `authorize_skill(caller, base, scope_id, skill_name, now)` — the run
 //!    gate (active+unexpired scope, caller is the grantee, clearance ≥ the skill's
 //!    floor). A rejection marks the step **denied** and stops the run.
-//! 2. on authorization, runs the step — one of **three kinds** (the polymorphic
-//!    loop step; resolved in priority order tool > provider > guest):
+//! 2. on authorization, runs the step — one of **three kinds** (the polymorphic loop
+//!    step; resolved in priority order tool > provider > guest). No kind carries a
+//!    credential or an identity (the cap / host-resolved key stays host-side), and
+//!    each step's output payload pipes into the next:
 //!    * a **guest step** schedules the skill's `guest` on the `Scheduler` under the
 //!      host-authoritative caller context and waits for its terminal `TaskStatus`;
 //!    * a **provider step** (P11.4, ADR-0019) runs an LLM completion instead:
@@ -29,8 +31,6 @@
 //!      the caller's `FirmContext` ([`InvocationCaps::mint`]), hands the bridge **only**
 //!      the opaque cap + the tool + the args the scope authorizes, and **revokes the
 //!      cap** the moment the call returns.
-//!    A step never carries a credential or an identity — the cap carries identity
-//!    opaquely, host-side. Each step's output payload pipes into the next.
 //!
 //! `GET /me/loops/runs/{id}` reports the per-step status live. Run history is kept
 //! **in-process** for now (the [`LoopRunRegistry`]); persisting it so it survives a
