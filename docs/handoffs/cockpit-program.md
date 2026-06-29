@@ -69,7 +69,7 @@ behind a Phase-8 probe:
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **P10.1–P10.7 merged (#120–#126) — phase complete end to end** |
-| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton **complete** (#127–#131); P11.4 provider steps merged (#132, ADR-0019); **P11.5 MCP tool steps in flight** (ADR-0020) |
+| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton **complete** (#127–#131); P11.4 provider steps (#132, ADR-0019); P11.5 MCP tool steps merged (#134, ADR-0020); **P11.6 authoring/library/loop-builder UI in flight** |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
 | P14 — Multi-Tenant | [#85](https://github.com/Tnsr-Q/Kanbrick-V1/issues/85) | 7 | slices enumerated in epic |
@@ -259,7 +259,22 @@ backend, **no second WASM runtime** (ADR-0014), core stays no-egress (ADR-0017).
 no-network stub default (injected via `AppState::with_mcp_bridge`); a recording-bridge test proves the opaque cap
 resolves **host-side** to the caller (identity never in the step body), the tool, and the args. The create route
 gains an optional per-step `tool_ref {tool, args?}` and rejects a step setting more than one kind (400). **P11.5
-in flight**, then **P11.6** (skill-authoring + library + loop-builder UI).
+merged as [#134].** **P11.6** (skill-authoring + library + loop-builder UI, **[AFK]**, pure frontend — no new ADR,
+reuses ADR-0011 + ADR-0016) closes the deepening half: a Cockpit **Skill Studio** React surface
+(`cockpit/src/SkillStudio.tsx`) makes the create-side usable in the app. New Tauri commands
+(`cockpit/src-tauri/src/skills.rs`, mirroring `loops.rs`) — `publish_skill`/`list_skills`/`skill_history`/
+`bind_skill`/`list_scopes`, plus `create_loop` added to `loops.rs` — are pure HTTP clients of the bundled
+`kanbrick-api` sidecar through the `authed_get`/`authed_post` bridge (host-held Bearer injected host-side,
+ADR-0016; the webview supplies only the SKILL.md text / names / ids). The panel **authors** a SKILL.md (a
+frontmatter form + body `<textarea>` composed client-side — the inverse of `SkillManifest::to_skill_md` — then
+`POST /me/skills`, surfacing the host-stamped `source`/`seq`), **browses** the scope-filtered library with a
+clearance badge + guest and per-skill version history, **binds** a published edition onto one of the caller's
+active scopes (`GET /me/scopes?project=…` → `POST /me/scopes/{id}/skills`), and **builds** a loop of ordered
+steps — each a guest XOR provider (`provider_ref {provider, model}`) XOR mcp-tool (`tool_ref {tool}`) — via
+`POST /me/loops`, which then appears in the P11.7 `LoopRunner` to run/watch. Gated locally with `tsc --noEmit`
++ `vite build` (green) and `cargo +stable fmt` on `cockpit/src-tauri`; cockpit-Rust clippy/test/`tauri build`
+ride the cockpit CI. **P11.6 in flight** — the **deepening half of Phase 11 is complete** once it merges (the
+remaining P11.8 skill-publish trust gate is [HITL], for the operator).
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator

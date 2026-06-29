@@ -124,6 +124,43 @@ struct RunBody {
     input: JsonValue,
 }
 
+/// A provider selection for a provider step (P11.4), mirroring `kanbrick-api`'s
+/// `ProviderRefInput`. Carries the model only — never a credential.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderRef {
+    pub provider: String,
+    pub model: String,
+}
+
+/// An MCP tool selection for a tool step (P11.5), mirroring `kanbrick-api`'s
+/// `ToolRefInput`. Names the tool + optional static args only — never an identity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolRef {
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<JsonValue>,
+}
+
+/// One step to author, mirroring `kanbrick-api`'s `StepInput`. A step is at most one
+/// kind: guest (neither ref), provider (`provider_ref`), or MCP tool (`tool_ref`); the
+/// server rejects a step that sets more than one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepSpec {
+    pub skill_name: String,
+    pub scope_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_ref: Option<ProviderRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_ref: Option<ToolRef>,
+}
+
+/// Body for `POST /me/loops` — author an ordered loop.
+#[derive(Serialize)]
+struct CreateBody {
+    name: String,
+    steps: Vec<StepSpec>,
+}
+
 /// A 401 clears the host session so the UI falls back to login.
 fn session_expired(app: &AppHandle) -> String {
     app.state::<Session>().clear();
@@ -187,6 +224,36 @@ pub async fn run_loop(
         .json::<RunView>()
         .await
         .map_err(|e| format!("unexpected run response: {e}"))
+}
+
+/// `invoke('create_loop', { name, steps })` — author a loop via `POST /me/loops`. Each
+/// step names a bound skill + scope and is guest, provider, or MCP-tool; the server
+/// validates (a step is at most one kind, an unknown provider/empty tool is a 400).
+/// Returns the created loop, which then appears in the run-and-watch picker above.
+#[tauri::command]
+pub async fn create_loop(
+    app: AppHandle,
+    name: String,
+    steps: Vec<StepSpec>,
+) -> Result<LoopSummary, String> {
+    let response = authed_post(&app, "/me/loops", &CreateBody { name, steps }).await?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(session_expired(&app));
+    }
+    if !response.status().is_success() {
+        let status = response.status();
+        let message = response
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+            .unwrap_or_else(|| format!("could not create loop ({status})"));
+        return Err(message);
+    }
+    response
+        .json::<LoopSummary>()
+        .await
+        .map_err(|e| format!("unexpected create-loop response: {e}"))
 }
 
 /// `invoke('watch_run', { runId, channel })` — stream a run's per-step status to
