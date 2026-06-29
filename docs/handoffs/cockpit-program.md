@@ -69,7 +69,7 @@ behind a Phase-8 probe:
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **P10.1–P10.7 merged (#120–#126) — phase complete end to end** |
-| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton **complete** (#127–#131); **P11.4 per-step provider keys in flight** (ADR-0019) |
+| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton **complete** (#127–#131); P11.4 provider steps merged (#132, ADR-0019); **P11.5 MCP tool steps in flight** (ADR-0020) |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
 | P14 — Multi-Tenant | [#85](https://github.com/Tnsr-Q/Kanbrick-V1/issues/85) | 7 | slices enumerated in epic |
@@ -245,8 +245,21 @@ opaque `provider`/`model` (kept out of `kanbrick-store`'s dep graph); the execut
 `AppState.provider_keys` **by `caller.user_id`** (never from the step) and injects it into a `ChatProvider`
 built by an injected `ProviderFactory` seam (echo default; real adapter + `kanbrick-egress` `GatedTransport`
 at deploy — 2A, no live `reqwest` in core/CI per ADR-0017). `provider_ref` selects the model only; a step can
-never carry a credential or an identity (ADR-0002). Token-ledger recording is deferred to **P12**. **P11.4 in
-flight**, then **P11.5** (external MCP tool steps) / **P11.6** (richer skill-library + provider-step authoring UI).
+never carry a credential or an identity (ADR-0002). Token-ledger recording is deferred to **P12**. **P11.4 merged
+as [#132].** **P11.5** (external MCP tool steps, ADR-0020) follows — the **third step kind**: a `(:LoopStep)` is
+now polymorphic across guest XOR provider XOR **mcp-tool**. A non-empty opaque `tool`/`tool_args` (kept out of
+`kanbrick-store`'s dep graph, exactly like P11.4's `provider`/`model`) makes a step an external MCP tool-call; the
+executor's third branch goes through the **same** `authorize_skill` gate (1A), then mints a per-invocation
+capability bound to the caller's `FirmContext` (`InvocationCaps::mint`), hands an **injected `McpBridge` seam**
+(`kanbrick-api/src/tool_runtime.rs`, mirroring the P11.4 `ProviderFactory`) **only** the opaque cap + the tool +
+the args the scope authorizes (static `tool_args` merged with the piped payload under `"input"`), and **revokes
+the cap** the instant the call returns. Per the P8.3 probe the real bridge wraps `tachyon-mcp` as a **managed
+sidecar** (P7.2 `SidecarSupervisor`) over the `x-kanbrick-internal-token` channel — **not** a `HostServices`
+backend, **no second WASM runtime** (ADR-0014), core stays no-egress (ADR-0017). This slice ships the seam + a
+no-network stub default (injected via `AppState::with_mcp_bridge`); a recording-bridge test proves the opaque cap
+resolves **host-side** to the caller (identity never in the step body), the tool, and the args. The create route
+gains an optional per-step `tool_ref {tool, args?}` and rejects a step setting more than one kind (400). **P11.5
+in flight**, then **P11.6** (skill-authoring + library + loop-builder UI).
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator
@@ -285,7 +298,8 @@ epic **#79**, so closing a probe surfaces exactly which slices to open next.
 `(:Skill)`+`(:SkillVersion)`) · 0013 `(:Loop)`/`(:LoopStep)` run-engine on Scheduler+EventBus ·
 0014 single WASM runtime · 0015 tenancy topology (per-workstation CP + central queue) ·
 0016 Cockpit IPC auth contract · 0017 BYO-AI egress allowlist+DLP · 0018 ProjectScope
-file/function granularity · 0019 loop provider steps (host-injected key, model-only `provider_ref`).
+file/function granularity · 0019 loop provider steps (host-injected key, model-only `provider_ref`) ·
+0020 loop MCP tool-call steps (managed-sidecar bridge, capability passthrough, injected seam).
 Each ADR is authored alongside its implementing slice (the repo's convention — see ADR-0008 landing
 with Track G).
 

@@ -16,19 +16,28 @@
 //! 1. calls `authorize_skill(caller, base, scope_id, skill_name, now)` — the run
 //!    gate (active+unexpired scope, caller is the grantee, clearance ≥ the skill's
 //!    floor). A rejection marks the step **denied** and stops the run.
-//! 2. on authorization, runs the step. A **guest step** schedules the skill's
-//!    `guest` on the `Scheduler` under the host-authoritative caller context and
-//!    waits for its terminal `TaskStatus`. A **provider step** (P11.4, ADR-0019)
-//!    runs an LLM completion instead: `provider_ref` selects the model only, and the
-//!    host resolves the caller's key from custody **by the caller's identity** and
-//!    injects it into a [`ProviderFactory`]-built provider — a step never carries a
-//!    credential or an identity. Each step's output payload pipes into the next.
+//! 2. on authorization, runs the step — one of **three kinds** (the polymorphic
+//!    loop step; resolved in priority order tool > provider > guest):
+//!    * a **guest step** schedules the skill's `guest` on the `Scheduler` under the
+//!      host-authoritative caller context and waits for its terminal `TaskStatus`;
+//!    * a **provider step** (P11.4, ADR-0019) runs an LLM completion instead:
+//!      `provider_ref` selects the model only, and the host resolves the caller's key
+//!      from custody **by the caller's identity** and injects it into a
+//!      [`ProviderFactory`]-built provider;
+//!    * an **MCP tool-call step** (P11.5, ADR-0020) runs an external tool via the
+//!      injected [`McpBridge`]: the host mints a per-invocation capability bound to
+//!      the caller's `FirmContext` ([`InvocationCaps::mint`]), hands the bridge **only**
+//!      the opaque cap + the tool + the args the scope authorizes, and **revokes the
+//!      cap** the moment the call returns.
+//!    A step never carries a credential or an identity — the cap carries identity
+//!    opaquely, host-side. Each step's output payload pipes into the next.
 //!
 //! `GET /me/loops/runs/{id}` reports the per-step status live. Run history is kept
 //! **in-process** for now (the [`LoopRunRegistry`]); persisting it so it survives a
-//! restart is P11.5. External MCP tool steps are P11.5; the provider step's live
-//! egress (real adapter + allowlist/DLP gate) lives behind the injected factory
-//! (ADR-0019) — this slice ships the no-network echo default.
+//! restart is a deferred companion of P11.5. The provider step's live egress (real
+//! adapter + allowlist/DLP gate) lives behind the injected factory (ADR-0019); the
+//! MCP tool step's live sidecar lives behind the injected bridge (ADR-0020) — this
+//! slice ships the no-network echo default for both.
 //!
 //! Identity stays host-authoritative (ADR-0002/0016): the loop `owner`, the run
 //! `caller`, and every guest invocation use the validated [`AuthedContext`]
@@ -63,7 +72,8 @@ use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
 use crate::provider_runtime::{self, ProviderFactory};
-use crate::{ApiError, AppState, AuthedContext};
+use crate::tool_runtime::McpBridge;
+use crate::{ApiError, AppState, AuthedContext, InvocationCaps};
 
 /// Minimum clearance to manage one's own loops. The floor (L1) — any authenticated
 /// employee may author/run loops; the real bar is per-step `authorize_skill` (the
@@ -77,6 +87,11 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the executor waits for a step to reach a terminal status. A hair beyond
 /// [`STEP_TIMEOUT`] so a timed-out task is observed as `TimedOut`, not a wait giveup.
 const STEP_WAIT_BUDGET: Duration = Duration::from_secs(35);
+
+/// TTL of the per-invocation capability minted for an MCP tool-call step (P11.5). It
+/// need only outlast the single bridge call; the cap is revoked the moment the call
+/// returns, mirroring the executor cap in `invoke_guest` (`lib.rs`).
+const TOOL_CAP_TTL: Duration = Duration::from_secs(60);
 
 // ── In-process run registry (durable run history is P11.5) ───────────────────
 
@@ -188,12 +203,15 @@ impl RunState {
 /// Execute a loop's steps sequentially, gating each through `authorize_skill`. A
 /// **guest step** runs the bound skill's WASM guest on the `Scheduler`; a **provider
 /// step** (P11.4) runs an LLM completion via the host-injected [`ProviderFactory`],
-/// with the caller's key resolved from custody by the caller's identity. Runs on a
-/// background thread; it communicates progress only through the shared
+/// with the caller's key resolved from custody by the caller's identity; an **MCP
+/// tool-call step** (P11.5) calls an external tool via the host-injected [`McpBridge`]
+/// under a per-invocation capability minted from `caps` and bound to the caller. Runs
+/// on a background thread; it communicates progress only through the shared
 /// [`LoopRunRegistry`].
 // The executor inherently carries the full run spec — the engine handles (store,
-// scheduler, registry, custody, provider factory) plus the run's identity, base
-// scope, steps, and input; a context struct would only relocate the arity.
+// scheduler, registry, custody, provider factory, capability registry, MCP bridge)
+// plus the run's identity, base scope, steps, and input; a context struct would only
+// relocate the arity.
 #[allow(clippy::too_many_arguments)]
 fn execute_loop(
     store: Arc<Store>,
@@ -201,6 +219,8 @@ fn execute_loop(
     registry: LoopRunRegistry,
     provider_keys: Arc<dyn ProviderKeyStore>,
     provider_factory: Arc<dyn ProviderFactory>,
+    caps: Arc<InvocationCaps>,
+    mcp_bridge: Arc<dyn McpBridge>,
     run_id: String,
     caller: FirmContext,
     base: ClearanceScope,
@@ -231,7 +251,34 @@ fn execute_loop(
             }
         };
 
-        if step.provider.is_empty() {
+        if !step.tool.is_empty() {
+            // ── MCP tool-call step (P11.5, ADR-0020): run an external tool via the
+            // managed-sidecar bridge instead of a guest or an LLM. The same
+            // `authorize_skill` gate (above) covers it — the skill supplies the scope +
+            // clearance floor. The step names ONLY the tool + args, never an identity:
+            // the host mints a per-invocation capability bound to the caller's
+            // `FirmContext`, hands the bridge the *opaque* cap, and revokes it the
+            // moment the call returns (mirroring `invoke_guest`'s executor cap). The
+            // tool + args come from the step + the piped payload; identity rides the
+            // cap, host-side — the bridge/sidecar never sees the identity bytes.
+            let cap = caps.mint(caller.clone(), TOOL_CAP_TTL);
+            let args = build_tool_args(&step.tool_args, &payload);
+            let result = mcp_bridge.call_tool(&cap, &step.tool, &args);
+            // Revoke regardless of outcome so a leaked cap cannot be replayed after.
+            caps.revoke(&cap);
+            match result {
+                Ok(value) => {
+                    // The host (not the sidecar) applies the result: pipe it onward.
+                    payload = value;
+                    registry.set_step(&run_id, step.position, StepOutcome::Completed);
+                }
+                Err(e) => {
+                    registry.set_step(&run_id, step.position, StepOutcome::Failed(e));
+                    failed = true;
+                    break;
+                }
+            }
+        } else if step.provider.is_empty() {
             // ── Guest step: run the bound skill's WASM guest on the Scheduler. ──
             //
             // Defense-in-depth: the loop path must enforce the same guest clearance
@@ -382,6 +429,19 @@ fn payload_to_prompt(payload: &JsonValue) -> String {
     }
 }
 
+/// Build an MCP tool's argument object from the step's static `tool_args` (an opaque
+/// JSON object string, validated at create time) and the piped `payload`, which is
+/// injected under `"input"`. A non-object/empty `tool_args` contributes no static
+/// keys. Never includes a credential or an identity — those ride the minted cap.
+fn build_tool_args(tool_args: &str, payload: &JsonValue) -> JsonValue {
+    let mut map = match serde_json::from_str::<JsonValue>(tool_args) {
+        Ok(JsonValue::Object(m)) => m,
+        _ => serde_json::Map::new(),
+    };
+    map.insert("input".to_string(), payload.clone());
+    JsonValue::Object(map)
+}
+
 // ── DTOs ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -389,12 +449,19 @@ pub(crate) struct LoopStepDto {
     position: i64,
     skill_name: String,
     scope_id: String,
-    /// Provider kind for a provider step (P11.4); omitted for a guest step.
+    /// Provider kind for a provider step (P11.4); omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
-    /// Model id for a provider step; omitted for a guest step.
+    /// Model id for a provider step; omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    /// External tool name for an MCP tool-call step (P11.5); omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool: Option<String>,
+    /// Static tool arguments for an MCP tool step (parsed back to JSON); omitted
+    /// otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_args: Option<JsonValue>,
 }
 
 #[derive(Debug, Serialize)]
@@ -421,18 +488,30 @@ impl LoopDto {
                     scope_id: s.scope_id,
                     provider: non_empty(s.provider),
                     model: non_empty(s.model),
+                    tool: non_empty(s.tool),
+                    tool_args: tool_args_json(&s.tool_args),
                 })
                 .collect(),
         }
     }
 }
 
-/// `Some(s)` unless `s` is empty (a guest step stores empty provider/model).
+/// `Some(s)` unless `s` is empty (a non-matching step kind stores the empty string).
 fn non_empty(s: String) -> Option<String> {
     if s.is_empty() {
         None
     } else {
         Some(s)
+    }
+}
+
+/// Parse a stored `tool_args` string back to JSON for the DTO. Empty (no args, or not
+/// an MCP step) → `None`; a stored value is parsed (it was validated at create time).
+fn tool_args_json(tool_args: &str) -> Option<JsonValue> {
+    if tool_args.is_empty() {
+        None
+    } else {
+        serde_json::from_str(tool_args).ok()
     }
 }
 
@@ -508,6 +587,11 @@ pub(crate) struct StepInput {
     /// Carries the model only; never a credential.
     #[serde(default)]
     provider_ref: Option<ProviderRefInput>,
+    /// Optional MCP tool selection (P11.5) — present makes this an *MCP tool-call
+    /// step*. Names the tool + args only; never a credential or an identity. A step
+    /// is at most one kind — setting both `provider_ref` and `tool_ref` is rejected.
+    #[serde(default)]
+    tool_ref: Option<ToolRefInput>,
 }
 
 /// A provider step's model selection. **No key field** — the host resolves the key
@@ -518,6 +602,19 @@ pub(crate) struct ProviderRefInput {
     provider: String,
     /// Model id (e.g. `"claude-opus-4-8"`).
     model: String,
+}
+
+/// An MCP tool step's selection (P11.5). **No identity/credential field** — the host
+/// mints a caller-bound capability at run time; the step names only the tool + args
+/// the scope authorizes (ADR-0020, probe P8.3).
+#[derive(Debug, Deserialize)]
+pub(crate) struct ToolRefInput {
+    /// External tool name (e.g. `"web.search"`). Opaque to the core; the bridge routes it.
+    tool: String,
+    /// Optional static arguments — a JSON object the run engine merges with the piped
+    /// payload (under `"input"`). Must be an object when present.
+    #[serde(default)]
+    args: Option<JsonValue>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -536,9 +633,18 @@ pub(crate) async fn create_loop_handler(
     Json(body): Json<CreateLoopBody>,
 ) -> Result<Json<LoopDto>, ApiError> {
     require_clearance(&ctx, MANAGE_LOOPS_CLEARANCE)?;
-    // Validate any provider_ref up front: the provider must be a known kind and the
-    // model must be non-empty (the step picks the model only; the key is host-side).
+    // Validate each step's optional kind selection up front. A step is at most one
+    // kind: guest (neither ref), provider (`provider_ref`), or MCP tool (`tool_ref`).
     for step in &body.steps {
+        if step.provider_ref.is_some() && step.tool_ref.is_some() {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "a step is guest, provider, or mcp-tool — set at most one of provider_ref/tool_ref",
+            ));
+        }
+        // A provider_ref must name a known kind and a non-empty model (the step picks
+        // the model only; the key is resolved host-side).
         if let Some(p) = &step.provider_ref {
             if provider_runtime::parse_provider(&p.provider).is_none() {
                 return Err(ApiError::new(
@@ -555,6 +661,24 @@ pub(crate) async fn create_loop_handler(
                 ));
             }
         }
+        // A tool_ref must name a non-empty tool; any static args must be a JSON object
+        // (the run engine merges the piped payload into it under `"input"`).
+        if let Some(t) = &step.tool_ref {
+            if t.tool.trim().is_empty() {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "an mcp-tool step requires a tool",
+                ));
+            }
+            if t.args.as_ref().is_some_and(|a| !a.is_object()) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "tool args must be a JSON object",
+                ));
+            }
+        }
     }
     let specs: Vec<LoopStepSpec> = body
         .steps
@@ -564,11 +688,17 @@ pub(crate) async fn create_loop_handler(
                 Some(p) => (p.provider, p.model),
                 None => (String::new(), String::new()),
             };
+            let (tool, tool_args) = match s.tool_ref {
+                Some(t) => (t.tool, t.args.map(|v| v.to_string()).unwrap_or_default()),
+                None => (String::new(), String::new()),
+            };
             LoopStepSpec {
                 skill_name: s.skill_name,
                 scope_id: s.scope_id,
                 provider,
                 model,
+                tool,
+                tool_args,
             }
         })
         .collect();
@@ -647,6 +777,8 @@ pub(crate) async fn run_loop_handler(
     let registry = state.loop_runs.clone();
     let provider_keys = state.provider_keys.clone();
     let provider_factory = state.provider_factory.clone();
+    let caps = state.caps.clone();
+    let mcp_bridge = state.mcp_bridge.clone();
     let caller = ctx.clone();
     let exec_run_id = run_id.clone();
     let input = body.input;
@@ -657,6 +789,8 @@ pub(crate) async fn run_loop_handler(
             registry,
             provider_keys,
             provider_factory,
+            caps,
+            mcp_bridge,
             exec_run_id,
             caller,
             base,

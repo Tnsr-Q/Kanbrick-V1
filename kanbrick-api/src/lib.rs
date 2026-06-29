@@ -65,6 +65,7 @@ mod metrics;
 mod provider_keys;
 mod provider_runtime;
 mod skills;
+mod tool_runtime;
 
 pub use admission::{AdmissionConfig, GuestAdmission};
 pub use caps::InvocationCaps;
@@ -76,6 +77,7 @@ pub use executor::{
 pub use internal::internal_router;
 pub use loops::LoopRunRegistry;
 pub use provider_runtime::{EchoProviderFactory, ProviderFactory};
+pub use tool_runtime::{McpBridge, StubMcpBridge};
 
 /// Default location of the content-addressed asset volume in containers (#64).
 pub const DEFAULT_ASSET_DIR: &str = "/var/lib/kanbrick/assets";
@@ -206,6 +208,11 @@ pub struct AppState {
     /// real wire-adapter + egress-gate factory (ADR-0019) via
     /// [`with_provider_factory`](AppState::with_provider_factory).
     pub provider_factory: Arc<dyn ProviderFactory>,
+    /// Calls an external MCP tool for a loop *MCP tool-call step* (P11.5) under a
+    /// host-minted, caller-bound capability (the step names only the tool + args).
+    /// Defaults to a no-network stub; the deploy injects the managed `tachyon-mcp`
+    /// sidecar bridge (ADR-0020) via [`with_mcp_bridge`](AppState::with_mcp_bridge).
+    pub mcp_bridge: Arc<dyn McpBridge>,
 }
 
 impl AppState {
@@ -266,6 +273,7 @@ impl AppState {
             scheduler,
             loop_runs: LoopRunRegistry::new(),
             provider_factory: Arc::new(EchoProviderFactory),
+            mcp_bridge: Arc::new(StubMcpBridge),
         })
     }
 
@@ -282,6 +290,14 @@ impl AppState {
     /// sites are unchanged and default to the no-network echo factory.
     pub fn with_provider_factory(mut self, provider_factory: Arc<dyn ProviderFactory>) -> Self {
         self.provider_factory = provider_factory;
+        self
+    }
+
+    /// Replace the MCP tool bridge (P11.5). The deploy injects the managed
+    /// `tachyon-mcp` sidecar bridge here (ADR-0020); a builder, so existing call sites
+    /// are unchanged and default to the no-network stub.
+    pub fn with_mcp_bridge(mut self, mcp_bridge: Arc<dyn McpBridge>) -> Self {
+        self.mcp_bridge = mcp_bridge;
         self
     }
 }
