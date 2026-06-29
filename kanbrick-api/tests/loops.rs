@@ -9,12 +9,17 @@
 //! approved scope and the bound skill are built by chaining the P11.2/P11.2b routes:
 //! elena (L2) requests → peter (L4) approves → peter publishes → elena binds.
 
+use std::sync::{Arc, Mutex};
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chrono::Duration;
 use http_body_util::BodyExt;
-use kanbrick_api::{router, AppState};
+use kanbrick_api::{router, AppState, ProviderFactory};
 use kanbrick_auth::{JwtAuthenticator, LoginService};
+use kanbrick_providers::{
+    ChatProvider, ChatRequest, ChatResponse, ProviderError, ProviderKind, Role, StopReason, Usage,
+};
 use kanbrick_store::{seed, Migrator, Store};
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -24,7 +29,8 @@ const SECRET: &[u8] = b"loops-suite-secret";
 const ELENA: &str = "elena.ruiz@kanbrick.com"; // L2 — loop owner / scope grantee
 const PETER: &str = "peter.nash@kanbrick.com"; // L4 — grantor + skill publisher
 
-fn app() -> (tempfile::TempDir, axum::Router) {
+/// Seed the firm graph + financials and provision the elena/peter logins.
+fn seeded() -> (tempfile::TempDir, Store, JwtAuthenticator) {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     let firm = std::fs::read_to_string(concat!(
@@ -48,6 +54,11 @@ fn app() -> (tempfile::TempDir, axum::Router) {
         svc.set_password(ELENA, "pw2").unwrap();
         svc.set_password(PETER, "pw4").unwrap();
     }
+    (dir, store, jwt)
+}
+
+fn app() -> (tempfile::TempDir, axum::Router) {
+    let (dir, store, jwt) = seeded();
     (dir, router(AppState::new(store, jwt).unwrap()))
 }
 
@@ -482,4 +493,251 @@ async fn a_non_owner_cannot_read_someone_elses_run() {
     // Peter did not start this run.
     let (status, _) = get(&app, &format!("/me/loops/runs/{run_id}"), &peter).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+// ── P11.4 — provider steps (host-injected key; step picks the model only) ─────
+
+/// Save a provider key for the caller via the P9.3 custody route. The step never
+/// carries a key; the run engine resolves it from here by the caller's identity.
+async fn save_key(app: &axum::Router, token: &str, provider: &str, secret: &str) -> StatusCode {
+    post(
+        app,
+        "/me/provider-keys",
+        Some(token),
+        json!({ "provider": provider, "label": "loop-key", "secret": secret }),
+    )
+    .await
+    .0
+}
+
+#[tokio::test]
+async fn a_provider_step_runs_with_the_host_injected_key() {
+    let (_d, app) = app();
+    let elena = login(&app, ELENA, "pw2").await;
+    let peter = login(&app, PETER, "pw4").await;
+
+    let scope_id = approved_scope(&app, &elena, &peter).await;
+    // The skill provides authorization + scope (1A); provider_ref overrides execution.
+    publish_and_bind(
+        &app,
+        &elena,
+        &peter,
+        &scope_id,
+        "summarize",
+        "reporting",
+        "L1",
+    )
+    .await;
+    // Elena saves her own key in custody — the step below carries no credential.
+    assert_eq!(
+        save_key(&app, &elena, "anthropic", "sk-elena-secret").await,
+        StatusCode::OK
+    );
+
+    let created = post(
+        &app,
+        "/me/loops",
+        Some(&elena),
+        json!({ "name": "summarize-loop", "steps": [
+            { "skill_name": "summarize", "scope_id": scope_id,
+              "provider_ref": { "provider": "anthropic", "model": "claude-opus-4-8" } } ]}),
+    )
+    .await
+    .1;
+    let id = created["loop_id"].as_str().unwrap().to_string();
+    // The definition surfaces the provider selection (model only — no key anywhere).
+    assert_eq!(created["steps"][0]["provider"], "anthropic");
+    assert_eq!(created["steps"][0]["model"], "claude-opus-4-8");
+
+    let run = post(
+        &app,
+        &format!("/me/loops/{id}/run"),
+        Some(&elena),
+        json!({ "input": "summarize the portfolio" }),
+    )
+    .await
+    .1;
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    let final_run = poll_run(&app, &elena, &run_id).await;
+    assert_eq!(final_run["status"], "completed");
+    assert_eq!(final_run["steps"][0]["status"], "completed");
+}
+
+#[tokio::test]
+async fn a_provider_step_without_a_saved_key_fails_the_run() {
+    let (_d, app) = app();
+    let elena = login(&app, ELENA, "pw2").await;
+    let peter = login(&app, PETER, "pw4").await;
+    let scope_id = approved_scope(&app, &elena, &peter).await;
+    publish_and_bind(
+        &app,
+        &elena,
+        &peter,
+        &scope_id,
+        "summarize",
+        "reporting",
+        "L1",
+    )
+    .await;
+    // No key saved for the caller — the host has nothing to inject, so the step fails
+    // (it cannot fall back to a step-supplied credential, because there is none).
+
+    let created = post(
+        &app,
+        "/me/loops",
+        Some(&elena),
+        json!({ "name": "no-key", "steps": [
+            { "skill_name": "summarize", "scope_id": scope_id,
+              "provider_ref": { "provider": "openai", "model": "gpt-4o" } } ]}),
+    )
+    .await
+    .1;
+    let id = created["loop_id"].as_str().unwrap().to_string();
+    let run = post(
+        &app,
+        &format!("/me/loops/{id}/run"),
+        Some(&elena),
+        json!({ "input": "x" }),
+    )
+    .await
+    .1;
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    let final_run = poll_run(&app, &elena, &run_id).await;
+    assert_eq!(final_run["status"], "failed");
+    assert_eq!(final_run["steps"][0]["status"], "failed");
+    assert!(final_run["steps"][0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("no openai key"));
+}
+
+/// A [`ProviderFactory`] that records the `(kind, key)` it was built with.
+#[derive(Clone)]
+struct RecordingFactory {
+    seen: Arc<Mutex<Vec<(ProviderKind, String)>>>,
+}
+
+impl ProviderFactory for RecordingFactory {
+    fn build(&self, kind: ProviderKind, api_key: &str) -> Box<dyn ChatProvider> {
+        self.seen.lock().unwrap().push((kind, api_key.to_string()));
+        Box::new(EchoLike { kind })
+    }
+}
+
+/// A minimal [`ChatProvider`] returning the last user message (no network).
+struct EchoLike {
+    kind: ProviderKind,
+}
+
+impl ChatProvider for EchoLike {
+    fn kind(&self) -> ProviderKind {
+        self.kind
+    }
+    fn complete(&self, request: &ChatRequest) -> Result<ChatResponse, ProviderError> {
+        let content = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, Role::User))
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        Ok(ChatResponse {
+            model: request.model.clone(),
+            content,
+            usage: Usage::default(),
+            stop_reason: StopReason::EndTurn,
+        })
+    }
+}
+
+#[tokio::test]
+async fn the_host_injects_the_callers_saved_key_into_the_provider() {
+    let (_d, store, jwt) = seeded();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let factory: Arc<dyn ProviderFactory> = Arc::new(RecordingFactory { seen: seen.clone() });
+    let app = router(
+        AppState::new(store, jwt)
+            .unwrap()
+            .with_provider_factory(factory),
+    );
+
+    let elena = login(&app, ELENA, "pw2").await;
+    let peter = login(&app, PETER, "pw4").await;
+    let scope_id = approved_scope(&app, &elena, &peter).await;
+    publish_and_bind(
+        &app,
+        &elena,
+        &peter,
+        &scope_id,
+        "summarize",
+        "reporting",
+        "L1",
+    )
+    .await;
+    save_key(&app, &elena, "cerebras", "sk-cerebras-elena").await;
+
+    let created = post(
+        &app,
+        "/me/loops",
+        Some(&elena),
+        json!({ "name": "rec", "steps": [
+            { "skill_name": "summarize", "scope_id": scope_id,
+              "provider_ref": { "provider": "cerebras", "model": "llama-3.3-70b" } } ]}),
+    )
+    .await
+    .1;
+    let id = created["loop_id"].as_str().unwrap().to_string();
+    let run = post(
+        &app,
+        &format!("/me/loops/{id}/run"),
+        Some(&elena),
+        json!({ "input": "hi" }),
+    )
+    .await
+    .1;
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    poll_run(&app, &elena, &run_id).await;
+
+    // The factory received the caller's OWN saved key — host-resolved by identity,
+    // never carried by the step (the step body had only provider + model).
+    let recorded = seen.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1, "one provider built");
+    assert_eq!(recorded[0].0, ProviderKind::Cerebras);
+    assert_eq!(
+        recorded[0].1, "sk-cerebras-elena",
+        "the host injected the saved key"
+    );
+}
+
+#[tokio::test]
+async fn creating_a_provider_step_with_an_unknown_provider_is_400() {
+    let (_d, app) = app();
+    let elena = login(&app, ELENA, "pw2").await;
+    let (status, err) = post(
+        &app,
+        "/me/loops",
+        Some(&elena),
+        json!({ "name": "bad", "steps": [
+            { "skill_name": "s", "scope_id": "sc",
+              "provider_ref": { "provider": "gemini", "model": "x" } } ]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(err["error"]["kind"], "invalid_request");
+}
+
+#[tokio::test]
+async fn creating_a_provider_step_without_a_model_is_400() {
+    let (_d, app) = app();
+    let elena = login(&app, ELENA, "pw2").await;
+    let (status, _) = post(
+        &app,
+        "/me/loops",
+        Some(&elena),
+        json!({ "name": "bad", "steps": [
+            { "skill_name": "s", "scope_id": "sc",
+              "provider_ref": { "provider": "openai", "model": "  " } } ]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
