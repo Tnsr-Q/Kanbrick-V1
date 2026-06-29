@@ -15,6 +15,7 @@ mod loops;
 mod messenger;
 mod providers;
 mod sidecar;
+mod skills;
 
 use auth::Session;
 use components::VisualizerHub;
@@ -55,8 +56,14 @@ pub fn run() {
             providers::cancel_completion,
             loops::list_loops,
             loops::run_loop,
+            loops::create_loop,
             loops::watch_run,
             loops::stop_run_watch,
+            skills::publish_skill,
+            skills::list_skills,
+            skills::skill_history,
+            skills::bind_skill,
+            skills::list_scopes,
         ])
         .setup(|app| {
             // Spawn + health-gate the API sidecar; readiness is pushed to the

@@ -285,3 +285,99 @@ export const watchRun = (
 /** Stop a live run watch by id. */
 export const stopRunWatch = (watch: string): Promise<void> =>
   invoke<void>("stop_run_watch", { watch });
+
+// ── Skill authoring + library + loop builder (P11.6) ─────────────────────────
+
+/** Mirror of the Rust `SkillVersion` (kanbrick-api `SkillVersionRecord`). One
+ * published edition of a skill; `min_clearance` is `"L1"`..`"L5"`. */
+export type SkillVersion = {
+  skill_name: string;
+  version: string;
+  guest: string;
+  min_clearance: string;
+  description: string;
+  source: string;
+  created_at: string;
+  seq: number;
+};
+
+/** Mirror of the Rust `BoundSkill` (kanbrick-api `SkillDto`) — a skill edition bound
+ * onto a scope, with its run-time clearance floor. */
+export type BoundSkill = {
+  id: string;
+  name: string;
+  scope_id: string;
+  guest: string;
+  required_clearance: string;
+};
+
+/** Mirror of the Rust `GrantedScopeView` (kanbrick-api `GrantedScopeDto`). `status`
+ * is `pending|active|expired|revoked`. */
+export type GrantedScopeView = {
+  id: string;
+  project: string;
+  requester: string;
+  granted_by: string;
+  granted_persons: string[];
+  granted_companies: string[];
+  expires_at?: string | null;
+  status: string;
+};
+
+/** A provider step's model selection (P11.4) — model only, never a credential. */
+export type ProviderRef = { provider: ProviderKind; model: string };
+
+/** An MCP tool step's selection (P11.5) — tool + optional static args, never identity. */
+export type ToolRef = { tool: string; args?: unknown };
+
+/** One step to author (mirror of the Rust `StepSpec` / kanbrick-api `StepInput`). A
+ * step is at most one kind: guest (neither ref), provider (`provider_ref`), or MCP
+ * tool (`tool_ref`). */
+export type LoopStepSpec = {
+  skill_name: string;
+  scope_id: string;
+  provider_ref?: ProviderRef;
+  tool_ref?: ToolRef;
+};
+
+/**
+ * Publish a `SKILL.md` edition into the versioned catalogue (`POST /me/skills`). The
+ * webview sends only the manifest text; the host injects the Bearer and the server
+ * host-stamps the author. A malformed manifest rejects with the server's message.
+ */
+export const publishSkill = (skillMd: string): Promise<SkillVersion> =>
+  invoke<SkillVersion>("publish_skill", { skillMd });
+
+/** Browse the catalogue — the latest edition of every skill (`GET /me/skills`). */
+export const listSkills = (): Promise<SkillVersion[]> =>
+  invoke<SkillVersion[]>("list_skills");
+
+/** Every published edition of one skill, oldest→newest (`GET /me/skills/{name}`). */
+export const skillHistory = (name: string): Promise<SkillVersion[]> =>
+  invoke<SkillVersion[]>("skill_history", { name });
+
+/**
+ * Bind a published edition onto a scope (`POST /me/scopes/{id}/skills`). `version`
+ * omitted binds the latest. Gated server-side on scope ownership.
+ */
+export const bindSkill = (
+  scopeId: string,
+  skillName: string,
+  version?: string,
+): Promise<BoundSkill> =>
+  invoke<BoundSkill>("bind_skill", { scopeId, skillName, version: version ?? null });
+
+/** The caller's active grants for a project (`GET /me/scopes?project=…`), to pick a
+ * scope to bind onto or reference in a loop step. */
+export const listScopes = (project: string): Promise<GrantedScopeView[]> =>
+  invoke<GrantedScopeView[]>("list_scopes", { project });
+
+/**
+ * Author a loop (`POST /me/loops`). Each step names a bound skill + scope and is
+ * guest, provider, or MCP-tool; the server validates each. The created loop then
+ * appears in the {@link listLoops} picker for run-and-watch.
+ */
+export const createLoop = (
+  name: string,
+  steps: LoopStepSpec[],
+): Promise<LoopSummary> => invoke<LoopSummary>("create_loop", { name, steps });

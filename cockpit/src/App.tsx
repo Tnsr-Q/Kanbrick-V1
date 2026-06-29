@@ -13,6 +13,7 @@ import Providers from "./Providers";
 import Visualizer from "./Visualizer";
 import Messenger from "./Messenger";
 import LoopRunner from "./LoopRunner";
+import SkillStudio from "./SkillStudio";
 import "./App.css";
 
 const SIDECAR_COPY = {
@@ -34,7 +35,13 @@ export default function App() {
   const [sidecar, setSidecar] = useState<SidecarStatus>({ state: "starting" });
   const [auth, setAuth] = useState<Auth>("unknown");
   const [view, setView] = useState<
-    "main" | "spikes" | "providers" | "visualizer" | "messenger" | "loops"
+    | "main"
+    | "spikes"
+    | "providers"
+    | "visualizer"
+    | "messenger"
+    | "loops"
+    | "skills"
   >("main");
 
   useEffect(() => {
@@ -116,6 +123,15 @@ export default function App() {
     );
   }
 
+  // P11.6 skill authoring + library + loop builder — its own wider surface.
+  if (view === "skills") {
+    return (
+      <main className="splash spikes-view">
+        <SkillStudio onBack={() => setView("main")} />
+      </main>
+    );
+  }
+
   // P8.5 (#97) frontend de-risk spike — a separate, wider surface for ADR-0011.
   if (view === "spikes") {
     return (
@@ -177,6 +193,10 @@ export default function App() {
               <span aria-hidden="true">·</span>
               <button className="link-btn" onClick={() => setView("loops")}>
                 Loops (P11.7)
+              </button>
+              <span aria-hidden="true">·</span>
+              <button className="link-btn" onClick={() => setView("skills")}>
+                Skill Studio (P11.6)
               </button>
             </>
           )}
