@@ -63,6 +63,7 @@ mod loops;
 mod messenger;
 mod metrics;
 mod provider_keys;
+mod provider_runtime;
 mod skills;
 
 pub use admission::{AdmissionConfig, GuestAdmission};
@@ -74,6 +75,7 @@ pub use executor::{
 };
 pub use internal::internal_router;
 pub use loops::LoopRunRegistry;
+pub use provider_runtime::{EchoProviderFactory, ProviderFactory};
 
 /// Default location of the content-addressed asset volume in containers (#64).
 pub const DEFAULT_ASSET_DIR: &str = "/var/lib/kanbrick/assets";
@@ -199,6 +201,11 @@ pub struct AppState {
     /// In-process loop-run history surfaced by `GET /me/loops/runs/{id}` (P11.3).
     /// Durable run persistence is P11.5.
     pub loop_runs: LoopRunRegistry,
+    /// Builds a provider for a loop *provider step* (P11.4) from the host-resolved
+    /// key. Defaults to a no-network echo factory; the cockpit/deploy injects the
+    /// real wire-adapter + egress-gate factory (ADR-0019) via
+    /// [`with_provider_factory`](AppState::with_provider_factory).
+    pub provider_factory: Arc<dyn ProviderFactory>,
 }
 
 impl AppState {
@@ -258,6 +265,7 @@ impl AppState {
             provider_keys: Arc::new(InMemoryKeyStore::new()),
             scheduler,
             loop_runs: LoopRunRegistry::new(),
+            provider_factory: Arc::new(EchoProviderFactory),
         })
     }
 
@@ -266,6 +274,14 @@ impl AppState {
     /// are unchanged and default to the in-memory store.
     pub fn with_provider_keys(mut self, provider_keys: Arc<dyn ProviderKeyStore>) -> Self {
         self.provider_keys = provider_keys;
+        self
+    }
+
+    /// Replace the provider-step factory (P11.4). The deploy/cockpit injects the real
+    /// wire-adapter + egress-gate factory here (ADR-0019); a builder, so existing call
+    /// sites are unchanged and default to the no-network echo factory.
+    pub fn with_provider_factory(mut self, provider_factory: Arc<dyn ProviderFactory>) -> Self {
+        self.provider_factory = provider_factory;
         self
     }
 }

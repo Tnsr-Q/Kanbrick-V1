@@ -69,7 +69,7 @@ behind a Phase-8 probe:
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **P10.1–P10.7 merged (#120–#126) — phase complete end to end** |
-| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton-first; **P11.1–P11.3 merged (#127–#130)** · P11.7 thin run-and-watch UI in flight |
+| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton **complete** (#127–#131); **P11.4 per-step provider keys in flight** (ADR-0019) |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
 | P14 — Multi-Tenant | [#85](https://github.com/Tnsr-Q/Kanbrick-V1/issues/85) | 7 | slices enumerated in epic |
@@ -236,8 +236,17 @@ cancel), but the `watch_run` stream **self-stops** once the run leaves `running`
 New Tauri commands (`list_loops`/`run_loop`/`watch_run`/`stop_run_watch`) are pure HTTP clients of the bundled
 kanbrick-api sidecar through the `authed_get`/`authed_post` bridge (the host-held Bearer is injected host-side,
 ADR-0016; the webview supplies only the loop/run id + input — the server is the gate). `tsc --strict` + `vite
-build` green; cockpit-Rust `fmt --check` green; clippy/test/`tauri build` gated by cockpit CI. **P11.7 in
-flight**, then **P11.4** (per-step provider keys) / **P11.5** (MCP tool steps) / **P11.6** (richer skill-library UI).
+build` green; cockpit-Rust `fmt --check` green; clippy/test/`tauri build` gated by cockpit CI. **P11.7 merged
+as [#131] — the walking skeleton is complete end to end** (author skill → publish → bind → compose loop → run
+through the grant gate → watch live). **P11.4** (per-step provider keys, ADR-0019, **[HITL] — operator chose
+skill-bound + seam-only this session**) follows, deepening the skeleton: the `(:LoopStep)` schema gains an
+opaque `provider`/`model` (kept out of `kanbrick-store`'s dep graph); the executor branches guest-step vs
+**provider step** — same `authorize_skill` gate (1A), then the host resolves the caller's key from
+`AppState.provider_keys` **by `caller.user_id`** (never from the step) and injects it into a `ChatProvider`
+built by an injected `ProviderFactory` seam (echo default; real adapter + `kanbrick-egress` `GatedTransport`
+at deploy — 2A, no live `reqwest` in core/CI per ADR-0017). `provider_ref` selects the model only; a step can
+never carry a credential or an identity (ADR-0002). Token-ledger recording is deferred to **P12**. **P11.4 in
+flight**, then **P11.5** (external MCP tool steps) / **P11.6** (richer skill-library + provider-step authoring UI).
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator
@@ -276,8 +285,9 @@ epic **#79**, so closing a probe surfaces exactly which slices to open next.
 `(:Skill)`+`(:SkillVersion)`) · 0013 `(:Loop)`/`(:LoopStep)` run-engine on Scheduler+EventBus ·
 0014 single WASM runtime · 0015 tenancy topology (per-workstation CP + central queue) ·
 0016 Cockpit IPC auth contract · 0017 BYO-AI egress allowlist+DLP · 0018 ProjectScope
-file/function granularity. Each ADR is authored alongside its implementing slice (the
-repo's convention — see ADR-0008 landing with Track G).
+file/function granularity · 0019 loop provider steps (host-injected key, model-only `provider_ref`).
+Each ADR is authored alongside its implementing slice (the repo's convention — see ADR-0008 landing
+with Track G).
 
 ## 7. Labels
 

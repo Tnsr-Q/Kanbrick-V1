@@ -1,11 +1,12 @@
 //! Loop schema persistence (P11.3, ADR-0013).
 //!
 //! A `(:Loop {loop_id, name, owner, created_at})` is an owned, ordered pipeline of
-//! `(:LoopStep {step_id, loop_id, position, skill_name, scope_id})` nodes, linked by
-//! `(:Loop)-[:HAS_STEP]->(:LoopStep)`. Each step names a *skill* and the `scope_id`
-//! it runs under; the run engine (in `kanbrick-api`) compiles the ordered steps onto
-//! the mesh `Scheduler`, gating each step at run time through
-//! `ScopeGrants::authorize_skill`.
+//! `(:LoopStep {step_id, loop_id, position, skill_name, scope_id, provider, model})`
+//! nodes, linked by `(:Loop)-[:HAS_STEP]->(:LoopStep)`. Each step names a *skill* and
+//! the `scope_id` it runs under; the run engine (in `kanbrick-api`) compiles the
+//! ordered steps onto the mesh `Scheduler`, gating each step at run time through
+//! `ScopeGrants::authorize_skill`. A step with a non-empty `provider`/`model` is a
+//! *provider step* (P11.4) — an LLM completion instead of a guest.
 //!
 //! This module persists the loop **definition** only (the durable schema). A run's
 //! per-step history is kept in-process by the run engine for now; persisting it so it
@@ -29,7 +30,8 @@ use crate::value::Params;
 const LOOP_PROJECTION: &str = "RETURN l.loop_id, l.name, l.owner, l.created_at";
 
 /// Columns projected by the step read query, in order (bare-node, no aliases).
-const STEP_PROJECTION: &str = "RETURN s.loop_id, s.position, s.skill_name, s.scope_id";
+const STEP_PROJECTION: &str =
+    "RETURN s.loop_id, s.position, s.skill_name, s.scope_id, s.provider, s.model";
 
 /// A persisted loop definition: an owned, ordered pipeline of steps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +47,14 @@ pub struct LoopRecord {
 }
 
 /// One step of a loop: a skill bound to a scope, at an ordinal position.
+///
+/// A step is **polymorphic** (P11.4): when `provider` is empty it is a *guest step*
+/// (the bound skill's WASM guest runs); when `provider` is non-empty it is a
+/// *provider step* (an LLM completion runs on the named `provider`/`model` instead,
+/// authorized by the same skill+scope). The `provider`/`model` are stored as opaque
+/// strings so this crate stays free of `kanbrick-providers`; the run engine parses
+/// and gate-checks them. A provider step **never** carries a credential — the host
+/// resolves the caller's key from custody by the caller's identity at run time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoopStepRecord {
     /// The loop this step belongs to.
@@ -55,15 +65,26 @@ pub struct LoopStepRecord {
     pub skill_name: String,
     /// The scope the step is authorized + run under (`ScopeGrants::authorize_skill`).
     pub scope_id: String,
+    /// Provider kind for a provider step (e.g. `"anthropic"`); empty for a guest step.
+    #[serde(default)]
+    pub provider: String,
+    /// Model id for a provider step (e.g. `"claude-opus-4-8"`); empty for a guest step.
+    #[serde(default)]
+    pub model: String,
 }
 
-/// A step to create — `(skill_name, scope_id)`. Position is assigned by order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A step to create — `(skill_name, scope_id)` plus an optional provider selection.
+/// Position is assigned by order. Leave `provider`/`model` empty for a guest step.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LoopStepSpec {
-    /// The skill the step invokes.
+    /// The skill the step invokes (authorization + scope, always present).
     pub skill_name: String,
     /// The scope the step runs under.
     pub scope_id: String,
+    /// Provider kind for a provider step; empty for a guest step.
+    pub provider: String,
+    /// Model id for a provider step; empty for a guest step.
+    pub model: String,
 }
 
 /// Create a loop owned by `owner` with the given ordered steps. Returns the stored
@@ -101,13 +122,16 @@ pub fn create_loop(
         store.execute_with(
             "MATCH (s:LoopStep {step_id: $step_id}) \
              SET s.loop_id = $loop_id, s.position = $position, \
-                 s.skill_name = $skill_name, s.scope_id = $scope_id",
+                 s.skill_name = $skill_name, s.scope_id = $scope_id, \
+                 s.provider = $provider, s.model = $model",
             Params::new()
                 .with("step_id", step_id.as_str())
                 .with("loop_id", loop_id.as_str())
                 .with("position", position)
                 .with("skill_name", step.skill_name.as_str())
-                .with("scope_id", step.scope_id.as_str()),
+                .with("scope_id", step.scope_id.as_str())
+                .with("provider", step.provider.as_str())
+                .with("model", step.model.as_str()),
         )?;
         // Link loop → step on the non-parameterized path (edge MERGE; ids are UUIDs).
         store.execute(&format!(
@@ -182,6 +206,16 @@ mod tests {
         LoopStepSpec {
             skill_name: skill.to_string(),
             scope_id: scope.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn provider_spec(skill: &str, scope: &str, provider: &str, model: &str) -> LoopStepSpec {
+        LoopStepSpec {
+            skill_name: skill.to_string(),
+            scope_id: scope.to_string(),
+            provider: provider.to_string(),
+            model: model.to_string(),
         }
     }
 
@@ -209,6 +243,30 @@ mod tests {
         assert_eq!(steps[1].position, 1);
         assert_eq!(steps[1].skill_name, "report");
         assert!(steps.iter().all(|s| s.loop_id == created.loop_id));
+        // Guest steps carry empty provider/model.
+        assert!(steps
+            .iter()
+            .all(|s| s.provider.is_empty() && s.model.is_empty()));
+    }
+
+    #[test]
+    fn a_provider_step_round_trips_its_provider_and_model() {
+        let (_d, store) = store();
+        let created = create_loop(
+            &store,
+            "elena@kanbrick.com",
+            "mixed",
+            &[
+                spec("ingest", "scope-a"),
+                provider_spec("summarize", "scope-a", "anthropic", "claude-opus-4-8"),
+            ],
+        )
+        .unwrap();
+        let steps = loop_steps(&store, &created.loop_id).unwrap();
+        assert_eq!(steps[0].provider, "", "step 0 is a guest step");
+        assert_eq!(steps[1].provider, "anthropic", "step 1 is a provider step");
+        assert_eq!(steps[1].model, "claude-opus-4-8");
+        assert_eq!(steps[1].skill_name, "summarize");
     }
 
     #[test]

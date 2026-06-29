@@ -16,14 +16,19 @@
 //! 1. calls `authorize_skill(caller, base, scope_id, skill_name, now)` — the run
 //!    gate (active+unexpired scope, caller is the grantee, clearance ≥ the skill's
 //!    floor). A rejection marks the step **denied** and stops the run.
-//! 2. on authorization, schedules the skill's `guest` on the `Scheduler` under the
-//!    host-authoritative caller context and waits for its terminal `TaskStatus`,
-//!    piping each step's output payload into the next step's input.
+//! 2. on authorization, runs the step. A **guest step** schedules the skill's
+//!    `guest` on the `Scheduler` under the host-authoritative caller context and
+//!    waits for its terminal `TaskStatus`. A **provider step** (P11.4, ADR-0019)
+//!    runs an LLM completion instead: `provider_ref` selects the model only, and the
+//!    host resolves the caller's key from custody **by the caller's identity** and
+//!    injects it into a [`ProviderFactory`]-built provider — a step never carries a
+//!    credential or an identity. Each step's output payload pipes into the next.
 //!
 //! `GET /me/loops/runs/{id}` reports the per-step status live. Run history is kept
 //! **in-process** for now (the [`LoopRunRegistry`]); persisting it so it survives a
-//! restart is P11.5. Per-step provider/key selection is P11.4, external MCP tool
-//! steps are P11.5 — this slice is **guest-step loops only**.
+//! restart is P11.5. External MCP tool steps are P11.5; the provider step's live
+//! egress (real adapter + allowlist/DLP gate) lives behind the injected factory
+//! (ADR-0019) — this slice ships the no-network echo default.
 //!
 //! Identity stays host-authoritative (ADR-0002/0016): the loop `owner`, the run
 //! `caller`, and every guest invocation use the validated [`AuthedContext`]
@@ -48,6 +53,7 @@ use kanbrick_core::abi::GuestRequest;
 use kanbrick_core::{ClearanceLevel, FirmContext};
 use kanbrick_discovery::ScopeGrants;
 use kanbrick_mesh::{RetryPolicy, Scheduler, TaskStatus};
+use kanbrick_providers::{ChatRequest, ProviderKeyStore, ProviderKind};
 use kanbrick_store::{
     create_loop, get_loop, list_loops_for_owner, loop_steps, read_guest_policy, LoopRecord,
     LoopStepRecord, LoopStepSpec, Store,
@@ -56,6 +62,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
+use crate::provider_runtime::{self, ProviderFactory};
 use crate::{ApiError, AppState, AuthedContext};
 
 /// Minimum clearance to manage one's own loops. The floor (L1) — any authenticated
@@ -178,17 +185,22 @@ impl RunState {
 
 // ── The compiler / executor ──────────────────────────────────────────────────
 
-/// Execute a loop's steps sequentially, gating each through `authorize_skill` and
-/// running the authorized guest on the `Scheduler`. Runs on a background thread; it
-/// communicates progress only through the shared [`LoopRunRegistry`].
+/// Execute a loop's steps sequentially, gating each through `authorize_skill`. A
+/// **guest step** runs the bound skill's WASM guest on the `Scheduler`; a **provider
+/// step** (P11.4) runs an LLM completion via the host-injected [`ProviderFactory`],
+/// with the caller's key resolved from custody by the caller's identity. Runs on a
+/// background thread; it communicates progress only through the shared
+/// [`LoopRunRegistry`].
 // The executor inherently carries the full run spec — the engine handles (store,
-// scheduler, registry) plus the run's identity, base scope, steps, and input; a
-// context struct would only relocate the arity. Mirrors the `Scheduler` trigger fns.
+// scheduler, registry, custody, provider factory) plus the run's identity, base
+// scope, steps, and input; a context struct would only relocate the arity.
 #[allow(clippy::too_many_arguments)]
 fn execute_loop(
     store: Arc<Store>,
     scheduler: Arc<Scheduler>,
     registry: LoopRunRegistry,
+    provider_keys: Arc<dyn ProviderKeyStore>,
+    provider_factory: Arc<dyn ProviderFactory>,
     run_id: String,
     caller: FirmContext,
     base: ClearanceScope,
@@ -219,67 +231,118 @@ fn execute_loop(
             }
         };
 
-        // Defense-in-depth: the loop path must enforce the same guest clearance floor
-        // as `POST /guests/{name}`. `authorize_skill` checked the *skill*'s declared
-        // clearance; also require the caller to meet the backing *guest*'s policy
-        // floor, so a skill that under-declares its guest's clearance can't reach a
-        // higher-floor guest through a loop. (Each guest self-enforces too, but this
-        // keeps the floor uniform across both paths and fails closed at the gate.)
-        match read_guest_policy(&store, &skill.guest) {
-            Ok(Some(policy)) if caller.clearance < policy.min_clearance => {
-                registry.set_step(
-                    &run_id,
-                    step.position,
-                    StepOutcome::Denied(format!(
-                        "caller clearance below the {} guest floor",
-                        skill.guest
-                    )),
-                );
-                failed = true;
-                break;
+        if step.provider.is_empty() {
+            // ── Guest step: run the bound skill's WASM guest on the Scheduler. ──
+            //
+            // Defense-in-depth: the loop path must enforce the same guest clearance
+            // floor as `POST /guests/{name}`. `authorize_skill` checked the *skill*'s
+            // declared clearance; also require the caller to meet the backing
+            // *guest*'s policy floor, so a skill that under-declares its guest's
+            // clearance can't reach a higher-floor guest through a loop. (Each guest
+            // self-enforces too, but this keeps the floor uniform and fails closed.)
+            match read_guest_policy(&store, &skill.guest) {
+                Ok(Some(policy)) if caller.clearance < policy.min_clearance => {
+                    registry.set_step(
+                        &run_id,
+                        step.position,
+                        StepOutcome::Denied(format!(
+                            "caller clearance below the {} guest floor",
+                            skill.guest
+                        )),
+                    );
+                    failed = true;
+                    break;
+                }
+                // Policy satisfied, or unknown guest (scheduler reports GuestNotFound).
+                Ok(_) => {}
+                Err(e) => {
+                    registry.set_step(&run_id, step.position, StepOutcome::Failed(e.to_string()));
+                    failed = true;
+                    break;
+                }
             }
-            // Policy satisfied, or unknown guest (the scheduler reports GuestNotFound).
-            Ok(_) => {}
-            Err(e) => {
-                registry.set_step(&run_id, step.position, StepOutcome::Failed(e.to_string()));
-                failed = true;
-                break;
-            }
-        }
 
-        // Compile the step to a scheduled guest invocation and pipe output→input.
-        let request = GuestRequest::new(payload.clone());
-        let task = scheduler.schedule_with_retry(
-            &skill.guest,
-            &caller,
-            &request,
-            Some(STEP_TIMEOUT),
-            RetryPolicy::none(),
-        );
-        match scheduler.wait(task, STEP_WAIT_BUDGET) {
-            Some(TaskStatus::Completed(response)) => {
-                payload = response.payload;
-                registry.set_step(&run_id, step.position, StepOutcome::Completed);
+            // Compile the step to a scheduled guest invocation and pipe output→input.
+            let request = GuestRequest::new(payload.clone());
+            let task = scheduler.schedule_with_retry(
+                &skill.guest,
+                &caller,
+                &request,
+                Some(STEP_TIMEOUT),
+                RetryPolicy::none(),
+            );
+            match scheduler.wait(task, STEP_WAIT_BUDGET) {
+                Some(TaskStatus::Completed(response)) => {
+                    payload = response.payload;
+                    registry.set_step(&run_id, step.position, StepOutcome::Completed);
+                }
+                Some(TaskStatus::TimedOut) => {
+                    registry.set_step(&run_id, step.position, StepOutcome::TimedOut);
+                    failed = true;
+                    break;
+                }
+                Some(TaskStatus::Failed(msg)) => {
+                    registry.set_step(&run_id, step.position, StepOutcome::Failed(msg));
+                    failed = true;
+                    break;
+                }
+                // Non-terminal or unknown (wait budget elapsed): treat as a failure.
+                _ => {
+                    registry.set_step(
+                        &run_id,
+                        step.position,
+                        StepOutcome::Failed("step did not reach a terminal status".to_string()),
+                    );
+                    failed = true;
+                    break;
+                }
             }
-            Some(TaskStatus::TimedOut) => {
-                registry.set_step(&run_id, step.position, StepOutcome::TimedOut);
-                failed = true;
-                break;
-            }
-            Some(TaskStatus::Failed(msg)) => {
-                registry.set_step(&run_id, step.position, StepOutcome::Failed(msg));
-                failed = true;
-                break;
-            }
-            // Non-terminal or unknown (wait budget elapsed): treat as a failure.
-            _ => {
+        } else {
+            // ── Provider step (P11.4, ADR-0019): run an LLM completion instead of a
+            // guest. The step's provider/model selects the model ONLY; the host
+            // resolves the caller's key from custody by the caller's identity and
+            // injects it into the provider — a step can never supply a credential or
+            // an identity (ADR-0002). Egress (the real adapter + allowlist/DLP gate)
+            // lives behind the injected `provider_factory`; the default echoes.
+            let Some(kind) = provider_runtime::parse_provider(&step.provider) else {
                 registry.set_step(
                     &run_id,
                     step.position,
-                    StepOutcome::Failed("step did not reach a terminal status".to_string()),
+                    StepOutcome::Failed(format!("unknown provider {}", step.provider)),
                 );
                 failed = true;
                 break;
+            };
+            let key = match resolve_provider_key(&provider_keys, caller.user_id, kind) {
+                Ok(Some(secret)) => secret,
+                Ok(None) => {
+                    registry.set_step(
+                        &run_id,
+                        step.position,
+                        StepOutcome::Failed(format!("no {kind} key in the caller's custody")),
+                    );
+                    failed = true;
+                    break;
+                }
+                Err(e) => {
+                    registry.set_step(&run_id, step.position, StepOutcome::Failed(e));
+                    failed = true;
+                    break;
+                }
+            };
+            let provider = provider_factory.build(kind, &key);
+            let request = ChatRequest::new(step.model.as_str()).user(payload_to_prompt(&payload));
+            match provider.complete(&request) {
+                Ok(response) => {
+                    // Pipe the assistant text onward as the next step's input.
+                    payload = JsonValue::String(response.content);
+                    registry.set_step(&run_id, step.position, StepOutcome::Completed);
+                }
+                Err(e) => {
+                    registry.set_step(&run_id, step.position, StepOutcome::Failed(e.to_string()));
+                    failed = true;
+                    break;
+                }
             }
         }
     }
@@ -294,6 +357,31 @@ fn execute_loop(
     );
 }
 
+/// Resolve the caller's plaintext key for `kind` from custody, **by the caller's
+/// `user_id`** (host-authoritative — never from the step). Returns `Ok(None)` when the
+/// caller has saved no key for that provider. The first matching key is used.
+fn resolve_provider_key(
+    keys: &Arc<dyn ProviderKeyStore>,
+    user_id: Uuid,
+    kind: ProviderKind,
+) -> Result<Option<String>, String> {
+    let metas = keys.list(user_id).map_err(|e| e.to_string())?;
+    let Some(meta) = metas.into_iter().find(|m| m.provider == kind) else {
+        return Ok(None);
+    };
+    keys.get_secret(user_id, meta.id).map_err(|e| e.to_string())
+}
+
+/// Render the piped payload as an LLM prompt: a JSON string is used verbatim, `null`
+/// is the empty prompt, anything else is its compact JSON form.
+fn payload_to_prompt(payload: &JsonValue) -> String {
+    match payload {
+        JsonValue::String(text) => text.clone(),
+        JsonValue::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
 // ── DTOs ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -301,6 +389,12 @@ pub(crate) struct LoopStepDto {
     position: i64,
     skill_name: String,
     scope_id: String,
+    /// Provider kind for a provider step (P11.4); omitted for a guest step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    /// Model id for a provider step; omitted for a guest step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -325,9 +419,20 @@ impl LoopDto {
                     position: s.position,
                     skill_name: s.skill_name,
                     scope_id: s.scope_id,
+                    provider: non_empty(s.provider),
+                    model: non_empty(s.model),
                 })
                 .collect(),
         }
+    }
+}
+
+/// `Some(s)` unless `s` is empty (a guest step stores empty provider/model).
+fn non_empty(s: String) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
     }
 }
 
@@ -399,6 +504,20 @@ pub(crate) struct CreateLoopBody {
 pub(crate) struct StepInput {
     skill_name: String,
     scope_id: String,
+    /// Optional provider selection (P11.4) — present makes this a *provider step*.
+    /// Carries the model only; never a credential.
+    #[serde(default)]
+    provider_ref: Option<ProviderRefInput>,
+}
+
+/// A provider step's model selection. **No key field** — the host resolves the key
+/// from custody by the caller's identity at run time (ADR-0019).
+#[derive(Debug, Deserialize)]
+pub(crate) struct ProviderRefInput {
+    /// Provider kind token (`"anthropic"` | `"openai"` | `"cerebras"`).
+    provider: String,
+    /// Model id (e.g. `"claude-opus-4-8"`).
+    model: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -417,12 +536,40 @@ pub(crate) async fn create_loop_handler(
     Json(body): Json<CreateLoopBody>,
 ) -> Result<Json<LoopDto>, ApiError> {
     require_clearance(&ctx, MANAGE_LOOPS_CLEARANCE)?;
+    // Validate any provider_ref up front: the provider must be a known kind and the
+    // model must be non-empty (the step picks the model only; the key is host-side).
+    for step in &body.steps {
+        if let Some(p) = &step.provider_ref {
+            if provider_runtime::parse_provider(&p.provider).is_none() {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    format!("unknown provider {}", p.provider),
+                ));
+            }
+            if p.model.trim().is_empty() {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "a provider step requires a model",
+                ));
+            }
+        }
+    }
     let specs: Vec<LoopStepSpec> = body
         .steps
         .into_iter()
-        .map(|s| LoopStepSpec {
-            skill_name: s.skill_name,
-            scope_id: s.scope_id,
+        .map(|s| {
+            let (provider, model) = match s.provider_ref {
+                Some(p) => (p.provider, p.model),
+                None => (String::new(), String::new()),
+            };
+            LoopStepSpec {
+                skill_name: s.skill_name,
+                scope_id: s.scope_id,
+                provider,
+                model,
+            }
         })
         .collect();
     let record = create_loop(&state.store, &ctx.email, &body.name, &specs)?;
@@ -498,6 +645,8 @@ pub(crate) async fn run_loop_handler(
     let store = state.store.clone();
     let scheduler = state.scheduler.clone();
     let registry = state.loop_runs.clone();
+    let provider_keys = state.provider_keys.clone();
+    let provider_factory = state.provider_factory.clone();
     let caller = ctx.clone();
     let exec_run_id = run_id.clone();
     let input = body.input;
@@ -506,6 +655,8 @@ pub(crate) async fn run_loop_handler(
             store,
             scheduler,
             registry,
+            provider_keys,
+            provider_factory,
             exec_run_id,
             caller,
             base,
