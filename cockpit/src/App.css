@@ -408,6 +408,13 @@ h1 {
   color: var(--indigo);
   cursor: pointer;
 }
+
+/* Root error-boundary fallback actions (a side-by-side button row in the card). */
+.error-actions {
+  display: inline-flex;
+  gap: 10px;
+  margin-top: 4px;
+}
 .link-btn:hover {
   text-decoration: underline;
 }
