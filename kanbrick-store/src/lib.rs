@@ -44,7 +44,8 @@ pub use registry_meta::{bump_registry_generation, read_registry_generation};
 pub use schema::{CompanyNode, PersonNode, SegmentNode};
 pub use skill_registry::{
     count_skill_versions, latest_skill_version, list_skill_versions, list_skills,
-    publish_skill_version, SkillVersionRecord,
+    pending_skill_versions, publish_skill_version, set_skill_review, skill_owner,
+    SkillVersionRecord, REVIEW_APPROVED, REVIEW_PENDING, REVIEW_REJECTED,
 };
 pub use store::Store;
 pub use value::Params;

@@ -31,11 +31,12 @@ use axum::http::StatusCode;
 use axum::Json;
 use kanbrick_auth::{require_clearance, AuditLog};
 use kanbrick_core::ClearanceLevel;
-use kanbrick_discovery::{ScopeGrants, Skill};
+use kanbrick_discovery::{DiscoveryGraph, ScopeGrants, Skill};
 use kanbrick_loops::{parse_skill_md, SkillParseError};
 use kanbrick_store::{
-    latest_skill_version, list_skill_versions, list_skills, publish_skill_version,
-    SkillVersionRecord,
+    latest_skill_version, list_skill_versions, list_skills, pending_skill_versions,
+    publish_skill_version, set_skill_review, skill_owner, SkillVersionRecord, REVIEW_APPROVED,
+    REVIEW_REJECTED,
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +57,11 @@ const BROWSE_SKILLS_CLEARANCE: ClearanceLevel = ClearanceLevel::L1;
 /// owner always may; otherwise an L4 strategic reviewer can inspect any scope's
 /// bound skills (mirrors the grantor floor used elsewhere in the grant surface).
 const INSPECT_SCOPE_CLEARANCE: ClearanceLevel = ClearanceLevel::L4;
+
+/// Minimum clearance to see the publish-review queue and decide a review (P11.8). The
+/// dual-gate's clearance floor (L4); `review_skill` additionally re-checks that the
+/// reviewer is an eligible grantor over the *skill's author* (management chain or L5).
+const REVIEW_SKILL_CLEARANCE: ClearanceLevel = ClearanceLevel::L4;
 
 // ── DTO (the grant `Skill` is not serializable) ─────────────────────────────
 
@@ -109,16 +115,28 @@ pub(crate) async fn publish_skill(
     Json(body): Json<PublishSkillBody>,
 ) -> Result<Json<SkillVersionRecord>, ApiError> {
     require_clearance(&ctx, PUBLISH_SKILL_CLEARANCE)?;
-    // SECURITY (deferred to P11.8): a skill name is firm-global with no per-author
-    // namespace, and `publish_skill_version` MERGEs by `name@version`, re-stamping
-    // `source`/`guest`/`min_clearance` in place. So an L3 caller can re-publish an
-    // existing name and overwrite another author's edition (provenance stays honest —
-    // the new `source` is the host-stamped caller — and *existing* binds are
-    // unaffected since `define_skill` snapshots the clearance floor). The publish
-    // **trust gate** (dual-gate lead review before a name is authoritative/invocable
-    // by others) is the explicit subject of P11.8 [HITL]; this slice keeps publishing
-    // open and gated only by the L3 floor.
     let manifest = parse_skill_md(&body.skill_md).map_err(invalid_skill_md)?;
+    // Author-pin (P11.8, ADR-0021): a skill name is firm-global, and
+    // `publish_skill_version` MERGEs by `name@version`. To close the cross-author
+    // overwrite gap, only the name's **owner** (its first publisher) — or an L5
+    // cofounder — may publish further editions of an existing name; a different L3
+    // author is refused, so they can no longer re-stamp another author's
+    // `source`/`guest`/`min_clearance`. A brand-new name is open to any L3+ (the owner
+    // is recorded on first publish). The complementary half of the trust gate — an
+    // edition is not bindable by others until an eligible lead approves it — is
+    // enforced at bind time (`bind_skill`) and reviewed via `/me/skill-reviews`.
+    if let Some(owner) = skill_owner(&state.store, &manifest.name)? {
+        if owner != ctx.email && !ctx.clearance.satisfies(ClearanceLevel::L5) {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                format!(
+                    "skill {} is owned by {owner}; only its author (or an L5) may publish new editions",
+                    manifest.name
+                ),
+            ));
+        }
+    }
     // Provenance is host-authoritative: the author is the authenticated caller, not
     // anything in the request body (ADR-0002/0016).
     let record = SkillVersionRecord::new(
@@ -203,6 +221,25 @@ pub(crate) async fn bind_skill(
         };
         ApiError::new(StatusCode::NOT_FOUND, "not_found", what)
     })?;
+    // Trust gate (P11.8, ADR-0021): an edition is bindable by *others* only once an
+    // eligible lead has approved it. The author may bind/run their own skill freely
+    // (solo iteration), and an L5 cofounder may always bind; otherwise an unreviewed
+    // (or rejected) edition is refused here, before it can be invoked through a loop.
+    // A missing `review_status` (a pre-P11.8 edition) is treated as pending
+    // (fail-closed). Already-bound grants are unaffected — the run gate reads the
+    // `(:Skill)` snapshot, not the registry.
+    let approved = edition.review_status.as_deref() == Some(REVIEW_APPROVED);
+    let is_author = edition.source == ctx.email;
+    if !approved && !is_author && !ctx.clearance.satisfies(ClearanceLevel::L5) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            format!(
+                "skill {}@{} is not yet approved for use by others",
+                edition.skill_name, edition.version
+            ),
+        ));
+    }
     // Bind with the edition's clearance as the skill's run-time floor.
     let skill = grants.define_skill(
         &scope_id,
@@ -241,6 +278,107 @@ pub(crate) async fn list_scope_skills(
         .map(SkillDto::from)
         .collect();
     Ok(Json(dtos))
+}
+
+// ── Publish trust gate: review queue + decision (P11.8, ADR-0021) ────────────
+
+/// `POST /me/skill-reviews/{name}/{version}` body — a lead's decision on an edition.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ReviewBody {
+    /// `"approve"` | `"reject"`.
+    decision: String,
+    /// Optional free-text reason (audited).
+    #[serde(default)]
+    reason: String,
+}
+
+/// `GET /me/skill-reviews` — the queue of editions awaiting review. **L4-gated** (a
+/// reviewer-facing surface). Returns every pending edition; the per-skill eligibility
+/// (the reviewer must be in the author's chain, or an L5) is enforced on the decision.
+pub(crate) async fn list_skill_reviews(
+    State(state): State<AppState>,
+    AuthedContext(ctx): AuthedContext,
+) -> Result<Json<Vec<SkillVersionRecord>>, ApiError> {
+    require_clearance(&ctx, REVIEW_SKILL_CLEARANCE)?;
+    Ok(Json(pending_skill_versions(&state.store)?))
+}
+
+/// `POST /me/skill-reviews/{name}/{version}` — approve or reject a published edition,
+/// the dual-gate lead review that makes an authored skill invocable by others (P11.8).
+///
+/// The reviewer must clear the L4 floor **and** be an eligible grantor over the
+/// edition's *author* (in the author's management chain, or an L5 cofounder — reusing
+/// [`ScopeGrants::eligible_grantor`]), and may **not** review their own skill. The
+/// org-graph is built fresh per decision (as the scope-grant approve path does).
+pub(crate) async fn review_skill(
+    State(state): State<AppState>,
+    AuthedContext(ctx): AuthedContext,
+    Path((name, version)): Path<(String, String)>,
+    Json(body): Json<ReviewBody>,
+) -> Result<Json<SkillVersionRecord>, ApiError> {
+    require_clearance(&ctx, REVIEW_SKILL_CLEARANCE)?;
+    let status = match body.decision.as_str() {
+        "approve" => REVIEW_APPROVED,
+        "reject" => REVIEW_REJECTED,
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "decision must be \"approve\" or \"reject\"",
+            ))
+        }
+    };
+    // Resolve the edition (must exist) — also gives us its author for the eligibility
+    // check (the host-stamped `source`, never a body field).
+    let edition = list_skill_versions(&state.store, &name)?
+        .into_iter()
+        .find(|r| r.version == version)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                format!("skill {name}@{version}"),
+            )
+        })?;
+    if edition.source == ctx.email {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "cannot review your own skill",
+        ));
+    }
+    let graph = DiscoveryGraph::from_store(&state.store)?;
+    let grants = ScopeGrants::new(&state.store);
+    if !grants.eligible_grantor(&graph, &edition.source, &ctx) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "not an eligible reviewer for this skill's author",
+        ));
+    }
+    set_skill_review(
+        &state.store,
+        &name,
+        &version,
+        status,
+        &ctx.email,
+        &chrono::Utc::now().to_rfc3339(),
+    )?;
+    AuditLog::new(&state.store).record(
+        &ctx,
+        &format!("skill:review:{status}:{name}@{version}:{}", body.reason),
+    )?;
+    let updated = list_skill_versions(&state.store, &name)?
+        .into_iter()
+        .find(|r| r.version == version)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "reviewed edition could not be read back",
+            )
+        })?;
+    Ok(Json(updated))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

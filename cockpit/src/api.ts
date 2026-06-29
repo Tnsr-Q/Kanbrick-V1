@@ -299,7 +299,14 @@ export type SkillVersion = {
   source: string;
   created_at: string;
   seq: number;
+  /** Publish trust-gate state (P11.8): "pending"|"approved"|"rejected"; null/absent = pending. */
+  review_status?: string | null;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
 };
+
+/** A reviewer's decision on a published edition (P11.8). */
+export type ReviewDecision = "approve" | "reject";
 
 /** Mirror of the Rust `BoundSkill` (kanbrick-api `SkillDto`) — a skill edition bound
  * onto a scope, with its run-time clearance floor. */
@@ -381,3 +388,30 @@ export const createLoop = (
   name: string,
   steps: LoopStepSpec[],
 ): Promise<LoopSummary> => invoke<LoopSummary>("create_loop", { name, steps });
+
+// ── Skill-publish trust gate / reviewer queue (P11.8) ────────────────────────
+
+/**
+ * The pending publish-review queue (`GET /me/skill-reviews`). L4-gated server-side;
+ * a non-reviewer's call rejects, which the UI uses to hide the reviewer panel.
+ */
+export const listSkillReviews = (): Promise<SkillVersion[]> =>
+  invoke<SkillVersion[]>("list_skill_reviews");
+
+/**
+ * Approve or reject a published edition (`POST /me/skill-reviews/{name}/{version}`).
+ * Eligibility (reviewer over the author, no self-review) is enforced host-side.
+ * Returns the updated edition.
+ */
+export const reviewSkill = (
+  name: string,
+  version: string,
+  decision: ReviewDecision,
+  reason?: string,
+): Promise<SkillVersion> =>
+  invoke<SkillVersion>("review_skill", {
+    name,
+    version,
+    decision,
+    reason: reason ?? null,
+  });

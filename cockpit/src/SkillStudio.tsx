@@ -12,12 +12,15 @@ import {
   bindSkill,
   createLoop,
   listScopes,
+  listSkillReviews,
   listSkills,
   publishSkill,
+  reviewSkill,
   skillHistory,
   type GrantedScopeView,
   type LoopStepSpec,
   type ProviderKind,
+  type ReviewDecision,
   type SkillVersion,
 } from "./api";
 
@@ -27,6 +30,11 @@ const CLEARANCES = ["L1", "L2", "L3", "L4", "L5"] as const;
 const KNOWN_GUESTS = ["reporting", "valuation", "compliance"] as const;
 /** Provider kinds the run engine accepts (mirrors `kanbrick_providers::ProviderKind`). */
 const PROVIDERS: ProviderKind[] = ["anthropic", "openai", "cerebras"];
+
+/** A null/absent `review_status` reads as `pending` (fail-closed), matching the server. */
+function reviewLabel(status?: string | null): string {
+  return status ?? "pending";
+}
 
 /** The three loop-step kinds the builder can compose. */
 type StepKind = "guest" | "provider" | "mcp-tool";
@@ -88,6 +96,40 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
     try {
       setHistory(await skillHistory(name));
       setHistoryFor(name);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  // ── Review queue (P11.8) — shown only to eligible reviewers (the queue is
+  // L4-gated server-side; a non-reviewer's load fails, so the panel stays hidden).
+  const [reviews, setReviews] = useState<SkillVersion[]>([]);
+  const [canReview, setCanReview] = useState(false);
+
+  const refreshReviews = () => {
+    listSkillReviews()
+      .then((rs) => {
+        setReviews(rs);
+        setCanReview(true);
+      })
+      .catch(() => setCanReview(false));
+  };
+  useEffect(refreshReviews, []);
+
+  const onReview = async (
+    name: string,
+    version: string,
+    decision: ReviewDecision,
+  ) => {
+    setError(null);
+    setNotice(null);
+    try {
+      await reviewSkill(name, version, decision);
+      setNotice(
+        `Skill ${name}@${version} ${decision === "approve" ? "approved" : "rejected"}.`,
+      );
+      refreshReviews();
+      refreshSkills();
     } catch (e) {
       setError(String(e));
     }
@@ -343,6 +385,9 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
                 <span className={`badge badge-${s.min_clearance.toLowerCase()}`}>
                   <span className="badge-level">{s.min_clearance}</span>
                 </span>
+                <span className={`chip review-${reviewLabel(s.review_status)}`}>
+                  {reviewLabel(s.review_status)}
+                </span>
                 <span className="skill-version">v{s.version}</span>
                 <button className="link-btn" onClick={() => onHistory(s.skill_name)}>
                   {historyFor === s.skill_name ? "Hide" : "History"}
@@ -367,6 +412,49 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
           </ul>
         )}
       </div>
+
+      {/* ── Review queue (reviewers only, P11.8) ───────────────────────────── */}
+      {canReview && (
+        <div className="panel">
+          <div className="panel-head">
+            <h2>Review queue</h2>
+            <button className="link-btn" onClick={refreshReviews}>
+              Refresh
+            </button>
+          </div>
+          {reviews.length === 0 ? (
+            <p className="hint">No skills awaiting review.</p>
+          ) : (
+            <ul className="skill-list">
+              {reviews.map((r) => (
+                <li className="skill-row" key={`${r.skill_name}@${r.version}#${r.seq}`}>
+                  <span className="skill-name">{r.skill_name}</span>
+                  <span className="skill-version">v{r.version}</span>
+                  <span className="chip">{r.guest}</span>
+                  <span className={`badge badge-${r.min_clearance.toLowerCase()}`}>
+                    <span className="badge-level">{r.min_clearance}</span>
+                  </span>
+                  <span className="review-actions">
+                    <button
+                      className="btn-secondary"
+                      onClick={() => onReview(r.skill_name, r.version, "approve")}
+                    >
+                      Approve
+                    </button>
+                    <button
+                      className="btn-secondary danger"
+                      onClick={() => onReview(r.skill_name, r.version, "reject")}
+                    >
+                      Reject
+                    </button>
+                  </span>
+                  <span className="skill-desc">by {r.source}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* ── Bind onto a scope ──────────────────────────────────────────────── */}
       <div className="panel">

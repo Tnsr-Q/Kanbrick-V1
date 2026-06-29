@@ -1232,3 +1232,40 @@ h1 {
   display: flex;
   gap: 10px;
 }
+
+/* Review status badge (P11.8) — a small status-toned chip in the library/queue. */
+.chip.review-pending {
+  color: var(--warn);
+  background: rgba(245, 197, 66, 0.1);
+  border-color: rgba(245, 197, 66, 0.28);
+}
+
+.chip.review-approved {
+  color: var(--ok);
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.3);
+}
+
+.chip.review-rejected {
+  color: #fca5a5;
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.3);
+}
+
+/* Approve/Reject buttons in the review queue. */
+.review-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.review-actions .btn-secondary {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.review-actions .btn-secondary.danger {
+  color: #fca5a5;
+  background: rgba(248, 113, 113, 0.1);
+  border-color: rgba(248, 113, 113, 0.28);
+}

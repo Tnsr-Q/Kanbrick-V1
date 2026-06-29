@@ -7,6 +7,17 @@
 //! no access — `ScopeGrants` (ADR-0007) remains the sole authorization gate, wired
 //! to this registry in P11.2.
 //!
+//! ## Publish trust gate (P11.8, ADR-0021)
+//!
+//! Each `(:SkillVersion)` carries a `review_status` (`pending`|`approved`|`rejected`,
+//! reset to `pending` on every publish) plus `reviewed_by`/`reviewed_at`, and each
+//! `(:Skill)` carries an `owner` (its first publisher). These are the substrate for
+//! the trust gate: an eligible lead must **approve** an edition before it is bindable
+//! by anyone other than its author ([`set_skill_review`], [`pending_skill_versions`]),
+//! and only the owner (or an L5) may publish further editions of a name
+//! ([`skill_owner`], enforced in the API). A missing/`None` `review_status` is treated
+//! as `pending` (fail-closed). The gate enforcement itself lives in `kanbrick-api`.
+//!
 //! Writes follow the ADR-0001 dialect: a parameterized `MERGE` on the unique key,
 //! then `MATCH … SET` for the mutable fields, so re-publishing a version **updates
 //! in place** rather than duplicating. `min_clearance` is stored as its `Display`
@@ -29,7 +40,8 @@ use crate::value::Params;
 /// Columns projected by the read queries, in order. Un-aliased bare-node projection
 /// per ADR-0001 (the row mapper strips the `v.` prefix); aliasing would yield nulls.
 const PROJECTION: &str = "RETURN v.skill_name, v.version, v.guest, v.min_clearance, \
-     v.description, v.source, v.created_at, v.seq";
+     v.description, v.source, v.created_at, v.seq, \
+     v.review_status, v.reviewed_by, v.reviewed_at";
 
 /// A published edition of a skill — one `(:SkillVersion)` node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +63,18 @@ pub struct SkillVersionRecord {
     /// Append-only publish-order key, assigned by [`publish_skill_version`]
     /// (the value supplied on a freshly-built record is ignored on write).
     pub seq: i64,
+    /// Publish trust-gate state (P11.8, ADR-0021): `"pending"` | `"approved"` |
+    /// `"rejected"`. `None` (a pre-P11.8 edition with no recorded state, or an absent
+    /// column) is treated as **pending** — fail-closed, so an unreviewed edition is
+    /// never bindable by others. Set to `"pending"` on every (re-)publish.
+    #[serde(default)]
+    pub review_status: Option<String>,
+    /// The eligible lead who approved/rejected this edition; `None`/empty until decided.
+    #[serde(default)]
+    pub reviewed_by: Option<String>,
+    /// RFC 3339 timestamp of the review decision; `None`/empty until decided.
+    #[serde(default)]
+    pub reviewed_at: Option<String>,
 }
 
 impl SkillVersionRecord {
@@ -74,9 +98,21 @@ impl SkillVersionRecord {
             source: source.into(),
             created_at: chrono::Utc::now().to_rfc3339(),
             seq: 0,
+            // A freshly authored edition starts unreviewed (pending); the gate keeps
+            // it un-bindable by others until an eligible lead approves it (ADR-0021).
+            review_status: Some(REVIEW_PENDING.to_string()),
+            reviewed_by: None,
+            reviewed_at: None,
         }
     }
 }
+
+/// Review states for a published edition (P11.8, ADR-0021).
+pub const REVIEW_PENDING: &str = "pending";
+/// An edition an eligible lead has approved — bindable by others.
+pub const REVIEW_APPROVED: &str = "approved";
+/// An edition an eligible lead has rejected.
+pub const REVIEW_REJECTED: &str = "rejected";
 
 /// The unique node key for a skill edition: `"{name}@{version}"`.
 fn version_id(skill_name: &str, version: &str) -> String {
@@ -90,10 +126,22 @@ pub fn publish_skill_version(store: &Store, record: &SkillVersionRecord) -> Resu
     let version_id = version_id(&record.skill_name, &record.version);
     // The current edition count is the next append-only publish index.
     let seq = count_skill_versions(store)?;
+    // Establish or preserve the skill name's **owner** (P11.8, ADR-0021): the first
+    // publisher owns the name; subsequent publishes keep that owner (so a later
+    // publisher can never silently claim it). The publish-time author-pin check lives
+    // in the API (`publish_skill`), which rejects a non-owner before reaching here;
+    // this just records/keeps the owner so it is queryable for that check.
+    let owner = skill_owner(store, &record.skill_name)?.unwrap_or_else(|| record.source.clone());
 
     store.execute_with(
         "MERGE (s:Skill {name: $name})",
         Params::new().with("name", record.skill_name.as_str()),
+    )?;
+    store.execute_with(
+        "MATCH (s:Skill {name: $name}) SET s.owner = $owner",
+        Params::new()
+            .with("name", record.skill_name.as_str())
+            .with("owner", owner.as_str()),
     )?;
     store.execute_with(
         "MERGE (v:SkillVersion {version_id: $version_id})",
@@ -103,7 +151,9 @@ pub fn publish_skill_version(store: &Store, record: &SkillVersionRecord) -> Resu
         "MATCH (v:SkillVersion {version_id: $version_id}) \
          SET v.skill_name = $skill_name, v.version = $version, v.guest = $guest, \
              v.min_clearance = $min_clearance, v.description = $description, \
-             v.source = $source, v.created_at = $created_at, v.seq = $seq",
+             v.source = $source, v.created_at = $created_at, v.seq = $seq, \
+             v.review_status = $review_status, v.reviewed_by = $reviewed_by, \
+             v.reviewed_at = $reviewed_at",
         Params::new()
             .with("version_id", version_id.as_str())
             .with("skill_name", record.skill_name.as_str())
@@ -113,7 +163,12 @@ pub fn publish_skill_version(store: &Store, record: &SkillVersionRecord) -> Resu
             .with("description", record.description.as_str())
             .with("source", record.source.as_str())
             .with("created_at", record.created_at.as_str())
-            .with("seq", seq),
+            .with("seq", seq)
+            // Every (re-)publish resets the edition to pending and clears any prior
+            // decision — re-published content must be re-reviewed (fail-closed).
+            .with("review_status", REVIEW_PENDING)
+            .with("reviewed_by", "")
+            .with("reviewed_at", ""),
     )?;
     // Link identity → edition (graph fidelity; editions are queried by the FK
     // property, so this edge is provenance only). The relationship MERGE must use
@@ -175,6 +230,65 @@ pub fn count_skill_versions(store: &Store) -> Result<i64> {
     Ok(store
         .scalar_i64("MATCH (v:SkillVersion) RETURN count(v)", Params::new())?
         .unwrap_or(0))
+}
+
+/// The email that owns a skill **name** — its first publisher (P11.8, ADR-0021).
+/// `None` if the name was never published (or, for a pre-P11.8 node, has no recorded
+/// owner — the next publish records one). Author-pinning: the API lets only this owner
+/// (or an L5 cofounder) publish further editions of the name, closing the cross-author
+/// overwrite gap. Tolerates an absent/`null` column (→ `None`) for back-compat.
+pub fn skill_owner(store: &Store, skill_name: &str) -> Result<Option<String>> {
+    #[derive(Deserialize)]
+    struct OwnerRow {
+        #[serde(default)]
+        owner: Option<String>,
+    }
+    let rows: Vec<OwnerRow> = store.query(
+        "MATCH (s:Skill {name: $name}) RETURN s.owner",
+        Params::new().with("name", skill_name),
+    )?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .and_then(|r| r.owner)
+        .filter(|o| !o.is_empty()))
+}
+
+/// Record a review decision on an edition (P11.8, ADR-0021): set its `review_status`
+/// (`"approved"`/`"rejected"`) plus the reviewing lead + RFC 3339 timestamp. The SET is
+/// a no-op when the edition does not exist; the API resolves + `404`s the edition first.
+pub fn set_skill_review(
+    store: &Store,
+    skill_name: &str,
+    version: &str,
+    status: &str,
+    reviewer: &str,
+    reviewed_at: &str,
+) -> Result<()> {
+    let vid = version_id(skill_name, version);
+    store.execute_with(
+        "MATCH (v:SkillVersion {version_id: $version_id}) \
+         SET v.review_status = $status, v.reviewed_by = $reviewer, v.reviewed_at = $at",
+        Params::new()
+            .with("version_id", vid.as_str())
+            .with("status", status)
+            .with("reviewer", reviewer)
+            .with("at", reviewed_at),
+    )?;
+    Ok(())
+}
+
+/// Every published edition still awaiting review (P11.8) — the reviewer queue,
+/// oldest→newest by publish order. A missing/`None` status counts as **pending**
+/// (fail-closed), so pre-P11.8 editions surface for review too.
+pub fn pending_skill_versions(store: &Store) -> Result<Vec<SkillVersionRecord>> {
+    let mut all = store.query::<SkillVersionRecord>(
+        &format!("MATCH (v:SkillVersion) {PROJECTION}"),
+        Params::new(),
+    )?;
+    all.retain(|r| r.review_status.as_deref().unwrap_or(REVIEW_PENDING) == REVIEW_PENDING);
+    all.sort_by_key(|r| r.seq);
+    Ok(all)
 }
 
 #[cfg(test)]
@@ -365,5 +479,121 @@ mod tests {
         let (_d, store) = store();
         assert!(list_skill_versions(&store, "ghost").unwrap().is_empty());
         assert!(latest_skill_version(&store, "ghost").unwrap().is_none());
+    }
+
+    // ── P11.8 trust gate (ADR-0021) ──────────────────────────────────────────
+
+    fn record_by(name: &str, version: &str, source: &str) -> SkillVersionRecord {
+        SkillVersionRecord::new(name, version, "valuation", ClearanceLevel::L3, "d", source)
+    }
+
+    #[test]
+    fn publish_records_owner_and_starts_pending() {
+        let (_d, store) = store();
+        publish_skill_version(
+            &store,
+            &record_by("deal-modeling", "1.0.0", "elena@kanbrick.com"),
+        )
+        .unwrap();
+        assert_eq!(
+            skill_owner(&store, "deal-modeling").unwrap().as_deref(),
+            Some("elena@kanbrick.com"),
+            "the first publisher owns the name"
+        );
+        let latest = latest_skill_version(&store, "deal-modeling")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            latest.review_status.as_deref(),
+            Some(REVIEW_PENDING),
+            "a freshly published edition is pending"
+        );
+        assert!(skill_owner(&store, "ghost").unwrap().is_none());
+    }
+
+    #[test]
+    fn owner_is_preserved_across_a_republish_by_a_different_source() {
+        let (_d, store) = store();
+        publish_skill_version(
+            &store,
+            &record_by("deal-modeling", "1.0.0", "elena@kanbrick.com"),
+        )
+        .unwrap();
+        // A later edition with a different `source` must NOT change the owner (the API
+        // forbids a non-owner publish, but the store also keeps the owner stable).
+        publish_skill_version(
+            &store,
+            &record_by("deal-modeling", "2.0.0", "mallory@kanbrick.com"),
+        )
+        .unwrap();
+        assert_eq!(
+            skill_owner(&store, "deal-modeling").unwrap().as_deref(),
+            Some("elena@kanbrick.com"),
+            "owner stays the first publisher"
+        );
+    }
+
+    #[test]
+    fn review_decision_round_trips_and_a_republish_resets_it() {
+        let (_d, store) = store();
+        publish_skill_version(
+            &store,
+            &record_by("deal-modeling", "1.0.0", "elena@kanbrick.com"),
+        )
+        .unwrap();
+        set_skill_review(
+            &store,
+            "deal-modeling",
+            "1.0.0",
+            REVIEW_APPROVED,
+            "peter@kanbrick.com",
+            "2026-06-29T00:00:00+00:00",
+        )
+        .unwrap();
+        let approved = latest_skill_version(&store, "deal-modeling")
+            .unwrap()
+            .unwrap();
+        assert_eq!(approved.review_status.as_deref(), Some(REVIEW_APPROVED));
+        assert_eq!(approved.reviewed_by.as_deref(), Some("peter@kanbrick.com"));
+
+        // Re-publishing the same edition resets it to pending and clears the decision.
+        publish_skill_version(
+            &store,
+            &record_by("deal-modeling", "1.0.0", "elena@kanbrick.com"),
+        )
+        .unwrap();
+        let reset = latest_skill_version(&store, "deal-modeling")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reset.review_status.as_deref(),
+            Some(REVIEW_PENDING),
+            "a re-publish must be re-reviewed"
+        );
+        assert_eq!(
+            reset.reviewed_by.as_deref(),
+            Some(""),
+            "prior reviewer cleared"
+        );
+    }
+
+    #[test]
+    fn pending_queue_lists_only_unreviewed_editions() {
+        let (_d, store) = store();
+        publish_skill_version(&store, &record_by("a", "1.0.0", "elena@kanbrick.com")).unwrap();
+        publish_skill_version(&store, &record_by("b", "1.0.0", "elena@kanbrick.com")).unwrap();
+        // Approve `a`; `b` stays pending.
+        set_skill_review(
+            &store,
+            "a",
+            "1.0.0",
+            REVIEW_APPROVED,
+            "peter@kanbrick.com",
+            "t",
+        )
+        .unwrap();
+        let pending = pending_skill_versions(&store).unwrap();
+        let names: Vec<&str> = pending.iter().map(|r| r.skill_name.as_str()).collect();
+        assert_eq!(names, ["b"], "only the unreviewed edition is queued");
     }
 }

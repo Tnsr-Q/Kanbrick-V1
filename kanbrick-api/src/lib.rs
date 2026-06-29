@@ -404,6 +404,11 @@ pub fn router(state: AppState) -> Router {
             post(skills::publish_skill).get(skills::browse_skills),
         )
         .route("/me/skills/{name}", get(skills::skill_history))
+        .route("/me/skill-reviews", get(skills::list_skill_reviews))
+        .route(
+            "/me/skill-reviews/{name}/{version}",
+            post(skills::review_skill),
+        )
         .route(
             "/me/loops",
             post(loops::create_loop_handler).get(loops::list_loops_handler),
