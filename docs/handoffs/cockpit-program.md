@@ -69,7 +69,7 @@ behind a Phase-8 probe:
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **P10.1–P10.7 merged (#120–#126) — phase complete end to end** |
-| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton **complete** (#127–#131); P11.4 provider steps (#132, ADR-0019); P11.5 MCP tool steps merged (#134, ADR-0020); **P11.6 authoring/library/loop-builder UI in flight** |
+| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton **complete** (#127–#131); P11.4 provider steps (#132, ADR-0019); P11.5 MCP tool steps (#134, ADR-0020); P11.6 authoring/library/loop-builder UI (#135). **Deepening half complete end to end** — only P11.8 (skill-publish trust gate, **[HITL]**) remains |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
 | P14 — Multi-Tenant | [#85](https://github.com/Tnsr-Q/Kanbrick-V1/issues/85) | 7 | slices enumerated in epic |
@@ -273,8 +273,11 @@ active scopes (`GET /me/scopes?project=…` → `POST /me/scopes/{id}/skills`), 
 steps — each a guest XOR provider (`provider_ref {provider, model}`) XOR mcp-tool (`tool_ref {tool}`) — via
 `POST /me/loops`, which then appears in the P11.7 `LoopRunner` to run/watch. Gated locally with `tsc --noEmit`
 + `vite build` (green) and `cargo +stable fmt` on `cockpit/src-tauri`; cockpit-Rust clippy/test/`tauri build`
-ride the cockpit CI. **P11.6 in flight** — the **deepening half of Phase 11 is complete** once it merges (the
-remaining P11.8 skill-publish trust gate is [HITL], for the operator).
+ride the cockpit CI. **P11.6 merged as [#135] — the deepening half of Phase 11 is complete end to end**: author a
+SKILL.md → publish to the versioned registry → bind onto a grant-gated scope → compose a `(:Loop)` of steps
+(guest · provider · mcp-tool) → run through the real `authorize_skill` gate → watch each step live, all usable in
+the Cockpit. The only remaining P11 slice is **P11.8** (skill-publish dual-gate trust review, **[HITL]**), which
+also closes the P11.2b cross-author re-publish gap — surfaced to the operator, not pre-empted.
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator
