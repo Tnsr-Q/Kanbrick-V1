@@ -1048,6 +1048,29 @@ h1 {
   opacity: 0.9;
 }
 
+/* Step-kind badges (Slice 5) — extend the existing .kind-tag vocabulary. */
+.kind-tag-provider {
+  color: #f0abfc;
+  background: rgba(217, 70, 239, 0.12);
+  border-color: rgba(217, 70, 239, 0.3);
+}
+
+.kind-tag-mcp-tool {
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.12);
+  border-color: rgba(56, 189, 248, 0.3);
+}
+
+.step-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Highlight the step currently executing in a live run. */
+.step-row.is-current {
+  border-left: 3px solid var(--indigo);
+}
+
 /* ── Skill Studio (P11.6) ─────────────────────────────────────────────────── */
 
 .skill-studio {
