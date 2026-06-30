@@ -213,11 +213,17 @@ export const cancelCompletion = (stream: string): Promise<void> =>
 
 // ── Loop run-and-watch (P11.7) ───────────────────────────────────────────────
 
-/** Mirror of the Rust `LoopStepView` (kanbrick-api `LoopStepDto`). */
+/** Mirror of the Rust `LoopStepView` (kanbrick-api `LoopStepDto`). The kind fields are
+ * present only for their step kind: `provider`+`model` for a provider step (P11.4),
+ * `tool`(+`tool_args`) for an MCP tool step (P11.5); all absent → a guest step. */
 export type LoopStepView = {
   position: number;
   skill_name: string;
   scope_id: string;
+  provider?: string | null;
+  model?: string | null;
+  tool?: string | null;
+  tool_args?: unknown;
 };
 
 /** Mirror of the Rust `LoopSummary` (kanbrick-api `LoopDto`). */
@@ -238,6 +244,10 @@ export type RunStepView = {
   scope_id: string;
   status: string;
   detail?: string | null;
+  /** Step kind (P11.4/P11.5), present only for the matching kind — for badging. */
+  provider?: string | null;
+  model?: string | null;
+  tool?: string | null;
 };
 
 /** Mirror of the Rust `RunView` (kanbrick-api `RunDto`). `status` is

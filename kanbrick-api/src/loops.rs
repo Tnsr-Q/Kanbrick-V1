@@ -125,6 +125,12 @@ struct StepState {
     skill_name: String,
     scope_id: String,
     status: StepOutcome,
+    /// Step kind, captured from the `(:LoopStep)` so the run view can badge each step
+    /// (guest/provider/mcp-tool) — empty strings for the dimensions a step doesn't use
+    /// (mirrors `LoopStepRecord`).
+    provider: String,
+    model: String,
+    tool: String,
 }
 
 /// Per-step outcome — mirrors the mesh [`TaskStatus`], plus `Denied` (the run gate
@@ -192,6 +198,9 @@ impl RunState {
                     skill_name: s.skill_name.clone(),
                     scope_id: s.scope_id.clone(),
                     status: StepOutcome::Pending,
+                    provider: s.provider.clone(),
+                    model: s.model.clone(),
+                    tool: s.tool.clone(),
                 })
                 .collect(),
         }
@@ -523,6 +532,16 @@ pub(crate) struct RunStepDto {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
+    /// Provider kind for a provider step (P11.4); omitted otherwise. Lets the run view
+    /// badge each step by kind without re-reading the loop definition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    /// Model id for a provider step; omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    /// External tool name for an MCP tool-call step (P11.5); omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -563,6 +582,9 @@ impl From<RunState> for RunDto {
                         scope_id: s.scope_id,
                         status,
                         detail,
+                        provider: non_empty(s.provider),
+                        model: non_empty(s.model),
+                        tool: non_empty(s.tool),
                     }
                 })
                 .collect(),
