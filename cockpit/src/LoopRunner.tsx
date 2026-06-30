@@ -30,6 +30,23 @@ const RUN_TONE: Record<string, string> = {
   failed: "is-error",
 };
 
+/** A loop step's kind + detail, derived from the threaded fields (Slice 4) using the
+ * server's resolution priority: tool → mcp-tool, else provider → provider, else guest.
+ * The webview only reflects what the host sent (ADR-0016). */
+function stepKind(s: {
+  provider?: string | null;
+  model?: string | null;
+  tool?: string | null;
+}): { kind: "guest" | "provider" | "mcp-tool"; detail: string } {
+  if (s.tool) return { kind: "mcp-tool", detail: s.tool };
+  if (s.provider)
+    return {
+      kind: "provider",
+      detail: s.model ? `${s.provider} · ${s.model}` : s.provider,
+    };
+  return { kind: "guest", detail: "" };
+}
+
 export default function LoopRunner({ onBack }: { onBack: () => void }) {
   const [loops, setLoops] = useState<LoopSummary[]>([]);
   const [selected, setSelected] = useState<string>("");
@@ -146,13 +163,20 @@ export default function LoopRunner({ onBack }: { onBack: () => void }) {
           {/* Before a run: show the loop's static step plan. */}
           {selectedLoop && !run && (
             <ol className="step-list">
-              {selectedLoop.steps.map((s) => (
-                <li className="step-row" key={s.position}>
-                  <span className="step-pos">{s.position + 1}</span>
-                  <span className="step-skill">{s.skill_name}</span>
-                  <span className="step-scope">{s.scope_id}</span>
-                </li>
-              ))}
+              {selectedLoop.steps.map((s) => {
+                const k = stepKind(s);
+                return (
+                  <li className="step-row" key={s.position}>
+                    <span className="step-pos">{s.position + 1}</span>
+                    <span className="step-skill">{s.skill_name}</span>
+                    <span className={`kind-tag kind-tag-${k.kind}`}>
+                      {k.kind}
+                    </span>
+                    {k.detail && <span className="step-meta">{k.detail}</span>}
+                    <span className="step-scope">{s.scope_id}</span>
+                  </li>
+                );
+              })}
             </ol>
           )}
 
@@ -167,18 +191,30 @@ export default function LoopRunner({ onBack }: { onBack: () => void }) {
                 <span>Run {run.status}</span>
               </div>
               <ol className="step-list">
-                {run.steps.map((s) => (
-                  <li className="step-row" key={s.position}>
-                    <span className="step-pos">{s.position + 1}</span>
-                    <span className="step-skill">{s.skill_name}</span>
-                    <span
-                      className={`chip step-badge ${STEP_TONE[s.status] ?? ""}`}
+                {run.steps.map((s) => {
+                  const k = stepKind(s);
+                  return (
+                    <li
+                      className={`step-row${s.status === "running" ? " is-current" : ""}`}
+                      key={s.position}
                     >
-                      {s.status.replace("_", " ")}
-                    </span>
-                    {s.detail && <span className="step-detail">{s.detail}</span>}
-                  </li>
-                ))}
+                      <span className="step-pos">{s.position + 1}</span>
+                      <span className="step-skill">{s.skill_name}</span>
+                      <span className={`kind-tag kind-tag-${k.kind}`}>
+                        {k.kind}
+                      </span>
+                      {k.detail && <span className="step-meta">{k.detail}</span>}
+                      <span
+                        className={`chip step-badge ${STEP_TONE[s.status] ?? ""}`}
+                      >
+                        {s.status.replace("_", " ")}
+                      </span>
+                      {s.detail && (
+                        <span className="step-detail">{s.detail}</span>
+                      )}
+                    </li>
+                  );
+                })}
               </ol>
             </div>
           )}
