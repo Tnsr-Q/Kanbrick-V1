@@ -151,6 +151,13 @@ export default function SkillStudio() {
     setHistory([]);
   };
 
+  // Switching tabs also closes the history drawer — it belongs to the Library tab,
+  // so it shouldn't float over the others.
+  const selectTab = (next: Tab) => {
+    setTab(next);
+    if (historyFor) closeHistory();
+  };
+
   // ── Review queue (P11.8) — shown only to eligible reviewers (the queue is
   // L4-gated server-side; a non-reviewer's load fails, so the tab stays hidden).
   const [reviews, setReviews] = useState<SkillVersion[]>([]);
@@ -375,7 +382,7 @@ export default function SkillStudio() {
             role="tab"
             aria-selected={tab === t.key}
             className={`studio-tab${tab === t.key ? " is-active" : ""}`}
-            onClick={() => setTab(t.key)}
+            onClick={() => selectTab(t.key)}
           >
             {t.label}
           </button>
@@ -386,7 +393,7 @@ export default function SkillStudio() {
             role="tab"
             aria-selected={tab === "review"}
             className={`studio-tab${tab === "review" ? " is-active" : ""}`}
-            onClick={() => setTab("review")}
+            onClick={() => selectTab("review")}
           >
             Review{reviews.length > 0 ? ` (${reviews.length})` : ""}
           </button>
@@ -663,12 +670,21 @@ export default function SkillStudio() {
                         <select
                           aria-label="provider"
                           value={s.provider}
-                          onChange={(e) =>
+                          onChange={(e) => {
+                            const provider = e.target.value as ProviderKind;
+                            // Keep a hand-typed custom model; only swap to the new
+                            // provider's default when the current model is empty or
+                            // was the previous provider's suggested default.
+                            const keepModel =
+                              s.model.trim() !== "" &&
+                              !MODELS_BY_PROVIDER[s.provider].includes(s.model);
                             updateStep(i, {
-                              provider: e.target.value as ProviderKind,
-                              model: MODELS_BY_PROVIDER[e.target.value as ProviderKind][0],
-                            })
-                          }
+                              provider,
+                              model: keepModel
+                                ? s.model
+                                : MODELS_BY_PROVIDER[provider][0],
+                            });
+                          }}
                         >
                           {PROVIDERS.map((p) => (
                             <option key={p} value={p}>
