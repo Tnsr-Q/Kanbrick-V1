@@ -207,6 +207,23 @@ pub fn latest_skill_version(store: &Store, skill_name: &str) -> Result<Option<Sk
     Ok(list_skill_versions(store, skill_name)?.pop())
 }
 
+/// A single published edition by `(skill_name, version)`, or `None` if absent. A
+/// single-row read on the unique `version_id` key (`"{name}@{version}"`) — no
+/// aggregation, dialect-safe (ADR-0001) — so callers that need one specific edition
+/// avoid loading + scanning every version of the skill.
+pub fn get_skill_version(
+    store: &Store,
+    skill_name: &str,
+    version: &str,
+) -> Result<Option<SkillVersionRecord>> {
+    let version_id = version_id(skill_name, version);
+    let rows = store.query::<SkillVersionRecord>(
+        &format!("MATCH (v:SkillVersion {{version_id: $version_id}}) {PROJECTION}"),
+        Params::new().with("version_id", version_id.as_str()),
+    )?;
+    Ok(rows.into_iter().next())
+}
+
 /// The latest edition of every skill, one row per skill name, sorted by name.
 pub fn list_skills(store: &Store) -> Result<Vec<SkillVersionRecord>> {
     let mut all = store.query::<SkillVersionRecord>(
@@ -575,6 +592,39 @@ mod tests {
             Some(""),
             "prior reviewer cleared"
         );
+    }
+
+    #[test]
+    fn get_skill_version_resolves_one_edition_or_none() {
+        let (_d, store) = store();
+        publish_skill_version(
+            &store,
+            &record("deal-modeling", "1.0.0", ClearanceLevel::L3),
+        )
+        .unwrap();
+        publish_skill_version(
+            &store,
+            &record("deal-modeling", "2.0.0", ClearanceLevel::L4),
+        )
+        .unwrap();
+
+        let v1 = get_skill_version(&store, "deal-modeling", "1.0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(v1.version, "1.0.0");
+        assert_eq!(v1.min_clearance, ClearanceLevel::L3);
+        let v2 = get_skill_version(&store, "deal-modeling", "2.0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(v2.min_clearance, ClearanceLevel::L4);
+
+        // Unknown name or version → None (no scan, single-row key lookup).
+        assert!(get_skill_version(&store, "deal-modeling", "9.9.9")
+            .unwrap()
+            .is_none());
+        assert!(get_skill_version(&store, "ghost", "1.0.0")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

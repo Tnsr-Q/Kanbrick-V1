@@ -34,9 +34,9 @@ use kanbrick_core::ClearanceLevel;
 use kanbrick_discovery::{DiscoveryGraph, ScopeGrants, Skill};
 use kanbrick_loops::{parse_skill_md, SkillParseError};
 use kanbrick_store::{
-    latest_skill_version, list_skill_versions, list_skills, pending_skill_versions,
-    publish_skill_version, set_skill_review, skill_owner, SkillVersionRecord, REVIEW_APPROVED,
-    REVIEW_REJECTED,
+    get_skill_version, latest_skill_version, list_skill_versions, list_skills,
+    pending_skill_versions, publish_skill_version, set_skill_review, skill_owner,
+    SkillVersionRecord, REVIEW_APPROVED, REVIEW_REJECTED,
 };
 use serde::{Deserialize, Serialize};
 
@@ -207,11 +207,10 @@ pub(crate) async fn bind_skill(
             "not your scope",
         ));
     }
-    // Resolve the edition: a specific version if asked, else the latest published.
+    // Resolve the edition: a specific version (single-row key lookup) if asked, else
+    // the latest published.
     let edition = match body.version.as_deref() {
-        Some(v) => list_skill_versions(&state.store, &body.skill_name)?
-            .into_iter()
-            .find(|r| r.version == v),
+        Some(v) => get_skill_version(&state.store, &body.skill_name, v)?,
         None => latest_skill_version(&state.store, &body.skill_name)?,
     }
     .ok_or_else(|| {
@@ -329,17 +328,14 @@ pub(crate) async fn review_skill(
         }
     };
     // Resolve the edition (must exist) — also gives us its author for the eligibility
-    // check (the host-stamped `source`, never a body field).
-    let edition = list_skill_versions(&state.store, &name)?
-        .into_iter()
-        .find(|r| r.version == version)
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                format!("skill {name}@{version}"),
-            )
-        })?;
+    // check (the host-stamped `source`, never a body field). Single-row key lookup.
+    let edition = get_skill_version(&state.store, &name, &version)?.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            format!("skill {name}@{version}"),
+        )
+    })?;
     if edition.source == ctx.email {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
@@ -368,16 +364,13 @@ pub(crate) async fn review_skill(
         &ctx,
         &format!("skill:review:{status}:{name}@{version}:{}", body.reason),
     )?;
-    let updated = list_skill_versions(&state.store, &name)?
-        .into_iter()
-        .find(|r| r.version == version)
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "reviewed edition could not be read back",
-            )
-        })?;
+    let updated = get_skill_version(&state.store, &name, &version)?.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "reviewed edition could not be read back",
+        )
+    })?;
     Ok(Json(updated))
 }
 
