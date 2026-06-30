@@ -6,19 +6,17 @@
 //! Identity is host-authoritative (ADR-0002/0016): the actor is always the
 //! [`AuthedContext`]'s validated [`FirmContext`], never a field in the request body.
 //! `approve`/`deny` additionally need the firm org-graph (the eligible-grantor
-//! management chain), which is built per-request from the store via
-//! [`DiscoveryGraph::from_store`] — always fresh (correct even after a reorg), at the
-//! cost of a privileged full-graph read on each (rare) approval. The grant domain
-//! types are not serializable, so the responses use the thin DTOs defined here.
+//! management chain). That graph is a privileged full-graph read, so it is served
+//! from the memoized [`OrgGraphCache`](crate::OrgGraphCache) on `AppState` rather than
+//! rebuilt on each (rare) approval — the org structure is static between reorgs. The
+//! grant domain types are not serializable, so the responses use the thin DTOs here.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use kanbrick_auth::require_clearance;
 use kanbrick_core::ClearanceLevel;
-use kanbrick_discovery::{
-    DiscoveryGraph, GrantedScope, RequestStatus, ScopeGrants, ScopeRequest, ScopeStatus,
-};
+use kanbrick_discovery::{GrantedScope, RequestStatus, ScopeGrants, ScopeRequest, ScopeStatus};
 use serde::{Deserialize, Serialize};
 
 use crate::{ApiError, AppState, AuthedContext};
@@ -201,7 +199,7 @@ pub(crate) async fn approve_scope_request(
     Json(body): Json<ApproveBody>,
 ) -> Result<Json<GrantedScopeDto>, ApiError> {
     require_clearance(&ctx, GRANTOR_CLEARANCE)?;
-    let graph = DiscoveryGraph::from_store(&state.store)?;
+    let graph = state.org_graph.get_or_load(&state.store)?;
     let grants = ScopeGrants::new(&state.store);
     let granted = grants.approve(&id, &ctx, &graph, body.ttl_days)?;
     Ok(Json(granted.into()))
@@ -215,7 +213,7 @@ pub(crate) async fn deny_scope_request(
     Json(body): Json<DenyBody>,
 ) -> Result<StatusCode, ApiError> {
     require_clearance(&ctx, GRANTOR_CLEARANCE)?;
-    let graph = DiscoveryGraph::from_store(&state.store)?;
+    let graph = state.org_graph.get_or_load(&state.store)?;
     let grants = ScopeGrants::new(&state.store);
     grants.deny(&id, &ctx, &graph, &body.reason)?;
     Ok(StatusCode::NO_CONTENT)

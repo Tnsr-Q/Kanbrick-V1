@@ -31,7 +31,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use kanbrick_auth::{require_clearance, AuditLog};
 use kanbrick_core::ClearanceLevel;
-use kanbrick_discovery::{DiscoveryGraph, ScopeGrants, Skill};
+use kanbrick_discovery::{ScopeGrants, Skill};
 use kanbrick_loops::{parse_skill_md, SkillParseError};
 use kanbrick_store::{
     get_skill_version, latest_skill_version, list_skill_versions, list_skills,
@@ -308,7 +308,8 @@ pub(crate) async fn list_skill_reviews(
 /// The reviewer must clear the L4 floor **and** be an eligible grantor over the
 /// edition's *author* (in the author's management chain, or an L5 cofounder — reusing
 /// [`ScopeGrants::eligible_grantor`]), and may **not** review their own skill. The
-/// org-graph is built fresh per decision (as the scope-grant approve path does).
+/// org-graph comes from the shared memo on `AppState` (as the scope-grant approve
+/// path does), so the privileged full-graph read is amortized across decisions.
 pub(crate) async fn review_skill(
     State(state): State<AppState>,
     AuthedContext(ctx): AuthedContext,
@@ -343,7 +344,7 @@ pub(crate) async fn review_skill(
             "cannot review your own skill",
         ));
     }
-    let graph = DiscoveryGraph::from_store(&state.store)?;
+    let graph = state.org_graph.get_or_load(&state.store)?;
     let grants = ScopeGrants::new(&state.store);
     if !grants.eligible_grantor(&graph, &edition.source, &ctx) {
         return Err(ApiError::new(
