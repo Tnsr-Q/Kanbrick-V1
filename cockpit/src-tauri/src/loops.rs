@@ -34,12 +34,23 @@ const POLL_TICK: Duration = Duration::from_millis(120);
 /// the `Mutex` field under clippy's `type_complexity` bar (as the other hubs do).
 type WatchRegistry = HashMap<Uuid, Arc<AtomicBool>>;
 
-/// One step of a loop definition, mirroring `kanbrick-api`'s `LoopStepDto`.
+/// One step of a loop definition, mirroring `kanbrick-api`'s `LoopStepDto`. The kind
+/// fields (`provider`/`model` for a provider step, `tool`/`tool_args` for an MCP tool
+/// step) are present only for their step kind; all empty → a guest step. The webview
+/// only reflects what the host sends (ADR-0016); it derives no identity from them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopStepView {
     pub position: i64,
     pub skill_name: String,
     pub scope_id: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub tool_args: Option<JsonValue>,
 }
 
 /// A loop definition, mirroring `kanbrick-api`'s `LoopDto`.
@@ -63,6 +74,14 @@ pub struct RunStepView {
     pub status: String,
     #[serde(default)]
     pub detail: Option<String>,
+    /// Step kind (P11.4/P11.5), so the run view can badge each step; present only for
+    /// the matching kind (provider step → provider/model; MCP tool step → tool).
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
 }
 
 /// A loop run's live state, mirroring `kanbrick-api`'s `RunDto`. `status` is
@@ -337,14 +356,28 @@ mod tests {
             "owner": "elena.ruiz@kanbrick.com",
             "created_at": "2026-06-28T00:00:00+00:00",
             "steps": [
-                { "position": 0, "skill_name": "daily-report", "scope_id": "S1" }
+                { "position": 0, "skill_name": "daily-report", "scope_id": "S1" },
+                { "position": 1, "skill_name": "summarize", "scope_id": "S1",
+                  "provider": "anthropic", "model": "claude-opus-4-8" },
+                { "position": 2, "skill_name": "fetch", "scope_id": "S1",
+                  "tool": "web.search", "tool_args": { "q": "kanbrick" } }
             ]
         });
         let l: LoopSummary = serde_json::from_value(json).unwrap();
         assert_eq!(l.name, "nightly");
         assert_eq!(l.owner, "elena.ruiz@kanbrick.com");
-        assert_eq!(l.steps.len(), 1);
+        assert_eq!(l.steps.len(), 3);
+        // Guest step: every kind field absent → None.
         assert_eq!(l.steps[0].skill_name, "daily-report");
+        assert_eq!(l.steps[0].provider, None);
+        assert_eq!(l.steps[0].tool, None);
+        // Provider step: provider/model present, tool absent.
+        assert_eq!(l.steps[1].provider.as_deref(), Some("anthropic"));
+        assert_eq!(l.steps[1].model.as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(l.steps[1].tool, None);
+        // MCP tool step: tool + tool_args present.
+        assert_eq!(l.steps[2].tool.as_deref(), Some("web.search"));
+        assert_eq!(l.steps[2].tool_args.as_ref().unwrap()["q"], "kanbrick");
     }
 
     #[test]
@@ -356,7 +389,8 @@ mod tests {
             "started_at": "2026-06-28T00:00:01+00:00",
             "status": "failed",
             "steps": [
-                { "position": 0, "skill_name": "a", "scope_id": "S1", "status": "completed" },
+                { "position": 0, "skill_name": "a", "scope_id": "S1", "status": "completed",
+                  "provider": "anthropic", "model": "claude-opus-4-8" },
                 { "position": 1, "skill_name": "b", "scope_id": "S1", "status": "denied",
                   "detail": "caller clearance below the valuation guest floor" }
             ]
@@ -366,7 +400,11 @@ mod tests {
         assert_eq!(r.steps.len(), 2);
         assert_eq!(r.steps[0].status, "completed");
         assert_eq!(r.steps[0].detail, None);
+        // The kind fields ride through the run step (provider step here).
+        assert_eq!(r.steps[0].provider.as_deref(), Some("anthropic"));
+        assert_eq!(r.steps[0].model.as_deref(), Some("claude-opus-4-8"));
         assert_eq!(r.steps[1].status, "denied");
+        assert_eq!(r.steps[1].provider, None); // guest step
         assert!(r.steps[1].detail.as_deref().unwrap().contains("floor"));
     }
 
