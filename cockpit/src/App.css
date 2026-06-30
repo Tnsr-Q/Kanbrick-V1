@@ -419,11 +419,6 @@ h1 {
   text-decoration: underline;
 }
 
-.spikes-view {
-  place-items: start center;
-  overflow: auto;
-}
-
 .spikes {
   width: min(720px, 92vw);
   margin: 40px 0;
@@ -502,10 +497,6 @@ h1 {
   text-align: center;
 }
 
-.providers .back {
-  align-self: flex-start;
-}
-
 .providers .panel {
   align-items: stretch;
   width: 100%;
@@ -580,10 +571,6 @@ h1 {
 .visualizer h1,
 .visualizer .subtitle {
   text-align: center;
-}
-
-.visualizer .back {
-  align-self: flex-start;
 }
 
 .chip.live {
@@ -743,10 +730,6 @@ h1 {
 .messenger h1,
 .messenger .subtitle {
   text-align: center;
-}
-
-.messenger .back {
-  align-self: flex-start;
 }
 
 .messenger-grid {
@@ -913,10 +896,6 @@ h1 {
   text-align: center;
 }
 
-.loop-runner .back {
-  align-self: flex-start;
-}
-
 .loop-picker {
   display: flex;
   gap: 10px;
@@ -1065,10 +1044,6 @@ h1 {
   text-align: center;
 }
 
-.skill-studio .back {
-  align-self: flex-start;
-}
-
 .skill-studio .panel {
   align-items: stretch;
   width: 100%;
@@ -1133,12 +1108,6 @@ h1 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
-}
-
-.notice {
-  margin: 0;
-  color: var(--ok);
-  font-size: 13px;
 }
 
 .scope-loader {

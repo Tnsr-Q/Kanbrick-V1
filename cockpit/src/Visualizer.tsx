@@ -118,7 +118,7 @@ export default function Visualizer() {
 
       {error && <p className="error">{error}</p>}
 
-      {!loaded && !error ? (
+      {!loaded && !error && components.length === 0 ? (
         <div className="component-grid">
           {Array.from({ length: 3 }, (_, i) => (
             <div className="component-card" key={i} aria-busy="true">
