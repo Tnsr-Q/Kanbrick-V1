@@ -50,9 +50,9 @@
 //! under the caller's base clearance today. Applying the composed scope inside a
 //! guest invocation needs a mesh seam and is tracked for a later slice (ADR-0013).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -88,6 +88,18 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 /// [`STEP_TIMEOUT`] so a timed-out task is observed as `TimedOut`, not a wait giveup.
 const STEP_WAIT_BUDGET: Duration = Duration::from_secs(35);
 
+/// Wall-clock budget for an entire loop run, enforced at step boundaries: before each
+/// step the executor checks this deadline, so a long pipeline can't accrue
+/// `steps × STEP_WAIT_BUDGET` unbounded. Comfortably above a single step's budget so a
+/// normal multi-step loop never trips it; a run that does is failed at the next step.
+const TOTAL_RUN_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Cap on the in-process run registry. The oldest run is evicted once the registry
+/// grows past this, so a long-lived node's run history can't grow without bound
+/// (durable history is P11.5). Far above any realistic in-flight count, so the evicted
+/// run is virtually always long-terminal.
+const MAX_RETAINED_RUNS: usize = 512;
+
 /// TTL of the per-invocation capability minted for an MCP tool-call step (P11.5). It
 /// need only outlast the single bridge call; the cap is revoked the moment the call
 /// returns, mirroring the executor cap in `invoke_guest` (`lib.rs`).
@@ -95,11 +107,21 @@ const TOOL_CAP_TTL: Duration = Duration::from_secs(60);
 
 // ── In-process run registry (durable run history is P11.5) ───────────────────
 
-/// Live, in-process state of every loop run on this node. Cheaply cloneable (the
-/// map is behind an `Arc<Mutex<…>>`), so it rides in [`AppState`].
+/// Live, in-process state of every recent loop run on this node. Cheaply cloneable
+/// (the state is behind an `Arc<Mutex<…>>`), so it rides in [`AppState`]. Bounded to
+/// [`MAX_RETAINED_RUNS`] — the oldest run is evicted past the cap so history can't grow
+/// without bound (durable history is P11.5).
 #[derive(Clone, Default)]
 pub struct LoopRunRegistry {
-    runs: Arc<Mutex<HashMap<String, RunState>>>,
+    inner: Arc<Mutex<Inner>>,
+}
+
+/// The registry's guarded state: the runs by id, plus their insertion order (oldest
+/// first) so eviction past the cap is FIFO and O(1).
+#[derive(Default)]
+struct Inner {
+    runs: HashMap<String, RunState>,
+    order: VecDeque<String>,
 }
 
 #[derive(Clone)]
@@ -151,24 +173,33 @@ impl LoopRunRegistry {
         Self::default()
     }
 
+    /// Record a new run, evicting the oldest once the registry is over capacity
+    /// ([`MAX_RETAINED_RUNS`]).
     fn insert(&self, run: RunState) {
-        self.runs
-            .lock()
-            .expect("loop-run lock")
-            .insert(run.run_id.clone(), run);
+        let mut inner = self.inner.lock().expect("loop-run lock");
+        let run_id = run.run_id.clone();
+        if inner.runs.insert(run_id.clone(), run).is_none() {
+            inner.order.push_back(run_id);
+        }
+        while inner.order.len() > MAX_RETAINED_RUNS {
+            if let Some(oldest) = inner.order.pop_front() {
+                inner.runs.remove(&oldest);
+            }
+        }
     }
 
     fn snapshot(&self, run_id: &str) -> Option<RunState> {
-        self.runs
+        self.inner
             .lock()
             .expect("loop-run lock")
+            .runs
             .get(run_id)
             .cloned()
     }
 
     fn set_step(&self, run_id: &str, position: i64, outcome: StepOutcome) {
-        let mut runs = self.runs.lock().expect("loop-run lock");
-        if let Some(run) = runs.get_mut(run_id) {
+        let mut inner = self.inner.lock().expect("loop-run lock");
+        if let Some(run) = inner.runs.get_mut(run_id) {
             if let Some(step) = run.steps.iter_mut().find(|s| s.position == position) {
                 step.status = outcome;
             }
@@ -176,8 +207,8 @@ impl LoopRunRegistry {
     }
 
     fn set_run_status(&self, run_id: &str, status: RunStatus) {
-        let mut runs = self.runs.lock().expect("loop-run lock");
-        if let Some(run) = runs.get_mut(run_id) {
+        let mut inner = self.inner.lock().expect("loop-run lock");
+        if let Some(run) = inner.runs.get_mut(run_id) {
             run.status = status;
         }
     }
@@ -239,8 +270,21 @@ fn execute_loop(
     let grants = ScopeGrants::new(&store);
     let mut payload = initial_input;
     let mut failed = false;
+    // Whole-run budget: a runaway loop must not accrue `steps × STEP_WAIT_BUDGET`. The
+    // per-step waits already bound each step; this caps the run as a whole, checked at
+    // each step boundary (a step in flight is itself bounded by STEP_WAIT_BUDGET).
+    let deadline = Instant::now() + TOTAL_RUN_TIMEOUT;
 
     for step in &steps {
+        if Instant::now() >= deadline {
+            registry.set_step(
+                &run_id,
+                step.position,
+                StepOutcome::Failed("run exceeded the total-run timeout".to_string()),
+            );
+            failed = true;
+            break;
+        }
         registry.set_step(&run_id, step.position, StepOutcome::Running);
         // The run gate (deferred from P11.2b): a fresh `base` per step, since
         // `authorize_skill` consumes it. ACTIVE+unexpired scope, caller is the
@@ -861,4 +905,34 @@ fn not_found_run(run_id: &str) -> ApiError {
         "not_found",
         format!("loop run {run_id}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_evicts_oldest_beyond_cap() {
+        let reg = LoopRunRegistry::new();
+        for i in 0..(MAX_RETAINED_RUNS + 5) {
+            reg.insert(RunState::new(&format!("run-{i}"), "loop", "caller", &[]));
+        }
+        // The five oldest were evicted (FIFO); the rest, including the newest, remain.
+        assert!(reg.snapshot("run-0").is_none());
+        assert!(reg.snapshot("run-4").is_none());
+        assert!(reg.snapshot("run-5").is_some());
+        assert!(reg
+            .snapshot(&format!("run-{}", MAX_RETAINED_RUNS + 4))
+            .is_some());
+    }
+
+    #[test]
+    fn reinserting_the_same_run_id_does_not_grow_order() {
+        let reg = LoopRunRegistry::new();
+        // Same id inserted MAX+50 times must not evict itself or unbound `order`.
+        for _ in 0..(MAX_RETAINED_RUNS + 50) {
+            reg.insert(RunState::new("same", "loop", "caller", &[]));
+        }
+        assert!(reg.snapshot("same").is_some());
+    }
 }
