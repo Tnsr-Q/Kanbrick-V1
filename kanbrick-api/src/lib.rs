@@ -62,6 +62,7 @@ mod internal;
 mod loops;
 mod messenger;
 mod metrics;
+mod org_graph;
 mod provider_keys;
 mod provider_runtime;
 mod skills;
@@ -76,6 +77,7 @@ pub use executor::{
 };
 pub use internal::internal_router;
 pub use loops::LoopRunRegistry;
+pub use org_graph::{OrgGraphCache, DEFAULT_ORG_GRAPH_TTL};
 pub use provider_runtime::{EchoProviderFactory, ProviderFactory};
 pub use tool_runtime::{McpBridge, StubMcpBridge};
 
@@ -203,6 +205,11 @@ pub struct AppState {
     /// In-process loop-run history surfaced by `GET /me/loops/runs/{id}` (P11.3).
     /// Durable run persistence is P11.5.
     pub loop_runs: LoopRunRegistry,
+    /// Memoized firm org-graph shared by the grantor-gated handlers (scope
+    /// approve/deny, skill review). The org structure is static between reorgs, so
+    /// the privileged full-graph read happens once per TTL instead of per request;
+    /// see [`OrgGraphCache`].
+    pub org_graph: OrgGraphCache,
     /// Builds a provider for a loop *provider step* (P11.4) from the host-resolved
     /// key. Defaults to a no-network echo factory; the cockpit/deploy injects the
     /// real wire-adapter + egress-gate factory (ADR-0019) via
@@ -272,6 +279,7 @@ impl AppState {
             provider_keys: Arc::new(InMemoryKeyStore::new()),
             scheduler,
             loop_runs: LoopRunRegistry::new(),
+            org_graph: OrgGraphCache::new(DEFAULT_ORG_GRAPH_TTL),
             provider_factory: Arc::new(EchoProviderFactory),
             mcp_bridge: Arc::new(StubMcpBridge),
         })
