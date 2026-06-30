@@ -16,11 +16,10 @@ import {
   type MessengerScope,
 } from "./api";
 import Whiteboard, { type Stroke } from "./Whiteboard";
+import { useToast } from "./Toast";
 
 /** The group whose messages carry whiteboard strokes rather than chat text. */
 const WHITEBOARD_GROUP = "whiteboard";
-/** How long a notification popup stays up. */
-const TOAST_MS = 4000;
 
 type Task = { id: number; text: string; done: boolean };
 
@@ -47,7 +46,8 @@ function parseStroke(text: string): Stroke | null {
 
 const shortActor = (email: string): string => email.split("@")[0];
 
-export default function Messenger({ onBack }: { onBack: () => void }) {
+export default function Messenger() {
+  const toast = useToast();
   const [messages, setMessages] = useState<MessengerMessage[]>([]);
   const [self, setSelf] = useState<string>("");
   const [text, setText] = useState("");
@@ -55,11 +55,8 @@ export default function Messenger({ onBack }: { onBack: () => void }) {
   const [groupName, setGroupName] = useState("general");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [newTask, setNewTask] = useState("");
-  const [toast, setToast] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const seenChat = useRef<number>(-1);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const taskId = useRef(0);
 
   // Self identity (host-side) for own-message styling + notification filtering.
@@ -87,7 +84,7 @@ export default function Messenger({ onBack }: { onBack: () => void }) {
           setMessages(event.messages);
           break;
         case "error":
-          setError(event.message);
+          toast.error(event.message);
           break;
         case "stopped":
           break;
@@ -97,7 +94,7 @@ export default function Messenger({ onBack }: { onBack: () => void }) {
         watchId = id;
         if (!active) void stopMessages(id);
       })
-      .catch((e) => active && setError(String(e)));
+      .catch((e) => active && toast.error(String(e)));
     return () => {
       active = false;
       if (watchId) void stopMessages(watchId);
@@ -121,19 +118,10 @@ export default function Messenger({ onBack }: { onBack: () => void }) {
       seenChat.current = chat.length;
       if (fresh.length > 0) {
         const last = fresh[fresh.length - 1];
-        if (toastTimer.current) clearTimeout(toastTimer.current);
-        setToast(`${shortActor(last.actor)}: ${last.text}`);
-        toastTimer.current = setTimeout(() => setToast(null), TOAST_MS);
+        toast.info(`${shortActor(last.actor)}: ${last.text}`);
       }
     }
-  }, [messages, self]);
-
-  useEffect(
-    () => () => {
-      if (toastTimer.current) clearTimeout(toastTimer.current);
-    },
-    [],
-  );
+  }, [messages, self, toast]);
 
   const chat = messages.filter((m) => !isWhiteboard(m.scope));
   const strokes = messages
@@ -148,12 +136,11 @@ export default function Messenger({ onBack }: { onBack: () => void }) {
       scopeKind === "group"
         ? { kind: "group", name: groupName.trim() || "general" }
         : { kind: "public" };
-    setError(null);
     try {
       await sendMessage(body, scope);
       setText("");
     } catch (e) {
-      setError(String(e));
+      toast.error(String(e));
     }
   };
 
@@ -161,7 +148,7 @@ export default function Messenger({ onBack }: { onBack: () => void }) {
     sendMessage(JSON.stringify(stroke), {
       kind: "group",
       name: WHITEBOARD_GROUP,
-    }).catch((e) => setError(String(e)));
+    }).catch((e) => toast.error(String(e)));
   };
 
   const addTask = () => {
@@ -185,13 +172,8 @@ export default function Messenger({ onBack }: { onBack: () => void }) {
 
   return (
     <section className="card messenger">
-      <button className="link-btn back" onClick={onBack}>
-        ← Back
-      </button>
       <h1>Messenger</h1>
       <p className="subtitle">Chat, whiteboard, and tasks over the firm bus</p>
-
-      {error && <p className="error">{error}</p>}
 
       <div className="messenger-grid">
         <div className="panel msg-chat">
@@ -299,13 +281,6 @@ export default function Messenger({ onBack }: { onBack: () => void }) {
           )}
         </div>
       </div>
-
-      {toast && (
-        <div className="toast" role="status">
-          <span className="dot" />
-          <span>{toast}</span>
-        </div>
-      )}
     </section>
   );
 }

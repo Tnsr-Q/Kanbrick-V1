@@ -12,14 +12,11 @@ import { useCallback, useRef, useState } from "react";
  * and **tldraw / Excalidraw** for the whiteboard — all of which are *above* the
  * Tauri IPC boundary and therefore swappable without touching the spine.
  */
-export default function Spikes({ onBack }: { onBack: () => void }) {
+export default function Spikes() {
   return (
     <div className="spikes">
       <div className="spikes-head">
         <h2>UI surface spikes</h2>
-        <button className="btn-secondary" onClick={onBack}>
-          ← Back
-        </button>
       </div>
       <p className="hint">
         ADR-0011 · React + Vite, swappable above the IPC boundary. Production swaps

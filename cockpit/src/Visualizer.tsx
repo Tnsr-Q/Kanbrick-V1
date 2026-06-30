@@ -13,6 +13,7 @@ import {
   type ComponentsEvent,
   type ComponentStatus,
 } from "./api";
+import { Skeleton } from "./Skeleton";
 
 /** L1..L5 → human label (the firm's five-tier clearance model). */
 const CLEARANCE_LABEL: Record<string, string> = {
@@ -53,11 +54,12 @@ function Gauge({ label, value }: { label: string; value: number }) {
   );
 }
 
-export default function Visualizer({ onBack }: { onBack: () => void }) {
+export default function Visualizer() {
   const [components, setComponents] = useState<ComponentStatus[]>([]);
   const [clearance, setClearance] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   // Viewer clearance (for gating) + the initial catalogue.
@@ -68,7 +70,8 @@ export default function Visualizer({ onBack }: { onBack: () => void }) {
       .catch(() => {});
     listComponents()
       .then((c) => active && setComponents(c))
-      .catch((e) => active && setError(String(e)));
+      .catch((e) => active && setError(String(e)))
+      .finally(() => active && setLoaded(true));
     return () => {
       active = false;
     };
@@ -107,9 +110,6 @@ export default function Visualizer({ onBack }: { onBack: () => void }) {
 
   return (
     <section className="card visualizer">
-      <button className="link-btn back" onClick={onBack}>
-        ← Back
-      </button>
       <h1>Visualizer</h1>
       <p className="subtitle">
         Live component health
@@ -118,7 +118,17 @@ export default function Visualizer({ onBack }: { onBack: () => void }) {
 
       {error && <p className="error">{error}</p>}
 
-      {components.length === 0 ? (
+      {!loaded && !error && components.length === 0 ? (
+        <div className="component-grid">
+          {Array.from({ length: 3 }, (_, i) => (
+            <div className="component-card" key={i} aria-busy="true">
+              <Skeleton width="55%" height={16} />
+              <Skeleton width="40%" height={12} />
+              <Skeleton height={52} radius={10} />
+            </div>
+          ))}
+        </div>
+      ) : components.length === 0 ? (
         <p className="hint">No components running.</p>
       ) : (
         <div className="component-grid">
