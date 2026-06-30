@@ -12,8 +12,8 @@ src-tauri/gen/schemas
 # never committed (large, platform-specific build artifact).
 src-tauri/binaries/
 
-# Lockfiles are (re)generated on first install/build in a Tauri-capable env;
-# they are intentionally not committed for the P7.1 scaffold (no network in CI
-# here resolves them). The first `npm install` / `tauri build` produces them.
+# The JS lockfile is (re)generated on `npm install`; left uncommitted for the
+# scaffold. The Rust lockfile (src-tauri/Cargo.lock) IS committed — this is a
+# binary crate, so its pinned dependency graph is tracked on purpose, for
+# reproducible Tauri builds that an ecosystem release can't silently break.
 package-lock.json
-src-tauri/Cargo.lock

@@ -40,13 +40,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 # async stack — so it stays light inside the cockpit's separate build graph.
 kanbrick-providers = { path = "../../kanbrick-providers" }
 uuid = { version = "1", features = ["v4"] }
-# Constraint-only pin (not used directly): keep the transitive `time` off 0.3.52
-# (published 2026-06-30), which added a second arg to `Parsable::parse` and so breaks
-# the transitive `cookie 0.18.1` (Tauri's webview cookie store) — `error[E0061]` in a
-# fresh resolve. 0.3.51 is the last good release. This crate is a standalone build
-# graph with no committed Cargo.lock, so CI re-resolves to latest each run; drop this
-# once `cookie` ships a compatible release or a lockfile is committed here.
-time = ">=0.3, <0.3.52"
 
 [features]
 # Used by `tauri build` for production bundles; DO NOT REMOVE.
