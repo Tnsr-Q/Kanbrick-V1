@@ -12,6 +12,7 @@ import {
   type StreamEvent,
   type Usage,
 } from "./api";
+import { useToast } from "./Toast";
 
 const PROVIDERS: ProviderKind[] = ["anthropic", "openai", "cerebras"];
 
@@ -21,7 +22,8 @@ const DEFAULT_MODEL: Record<ProviderKind, string> = {
   cerebras: "llama-3.3-70b",
 };
 
-export default function Providers({ onBack }: { onBack: () => void }) {
+export default function Providers() {
+  const toast = useToast();
   const [keys, setKeys] = useState<KeyMetadata[]>([]);
   const [provider, setProvider] = useState<ProviderKind>("anthropic");
   const [model, setModel] = useState<string>(DEFAULT_MODEL.anthropic);
@@ -31,14 +33,13 @@ export default function Providers({ onBack }: { onBack: () => void }) {
   const [response, setResponse] = useState("");
   const [usage, setUsage] = useState<Usage | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [streamId, setStreamId] = useState<string | null>(null);
 
   const refreshKeys = () =>
     listProviderKeys()
       .then(setKeys)
-      .catch((e) => setError(String(e)));
+      .catch((e) => toast.error(String(e)));
 
   useEffect(() => {
     void refreshKeys();
@@ -50,19 +51,18 @@ export default function Providers({ onBack }: { onBack: () => void }) {
   };
 
   const save = async () => {
-    setError(null);
     try {
       await saveProviderKey(provider, label || `${provider} key`, secret);
       setSecret("");
       setLabel("");
       await refreshKeys();
+      toast.success(`Saved ${provider} key.`);
     } catch (e) {
-      setError(String(e));
+      toast.error(String(e));
     }
   };
 
   const send = async () => {
-    setError(null);
     setResponse("");
     setUsage(null);
     setStatus(null);
@@ -81,7 +81,7 @@ export default function Providers({ onBack }: { onBack: () => void }) {
               setStreaming(false);
               break;
             case "error":
-              setError(event.message);
+              toast.error(event.message);
               setStreaming(false);
               break;
             case "cancelled":
@@ -93,7 +93,7 @@ export default function Providers({ onBack }: { onBack: () => void }) {
       );
       setStreamId(id);
     } catch (e) {
-      setError(String(e));
+      toast.error(String(e));
       setStreaming(false);
     }
   };
@@ -106,9 +106,6 @@ export default function Providers({ onBack }: { onBack: () => void }) {
 
   return (
     <section className="card providers">
-      <button className="link-btn back" onClick={onBack}>
-        ← Back
-      </button>
       <h1>BYO-AI</h1>
       <p className="subtitle">
         Stream a completion — your key is injected host-side (P9.4)
@@ -214,8 +211,6 @@ export default function Providers({ onBack }: { onBack: () => void }) {
           )}
         </div>
       )}
-
-      {error && <p className="error">{error}</p>}
     </section>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { me, type Identity } from "./api";
+import { Skeleton } from "./Skeleton";
 
 /** L1..L5 → human label (from the firm's five-tier clearance model). */
 const CLEARANCE_LABEL: Record<string, string> = {
@@ -15,7 +16,7 @@ const CLEARANCE_LABEL: Record<string, string> = {
  * (login → sidecar → auth bridge → identity). Fetches identity through the host
  * `me` command (ADR-0016); the webview never sees the token.
  */
-export default function Me({ onSignOut }: { onSignOut: () => void }) {
+export default function Me() {
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,23 +36,28 @@ export default function Me({ onSignOut }: { onSignOut: () => void }) {
 
   if (error) {
     return (
-      <div className="panel">
-        <div className="status is-error" role="alert">
-          <span className="dot" />
-          <span>{error}</span>
-        </div>
-        <button className="btn-secondary" onClick={onSignOut}>
-          Back to sign in
-        </button>
+      <div className="status is-error" role="alert">
+        <span className="dot" />
+        <span>{error}</span>
       </div>
     );
   }
 
   if (!identity) {
+    // Skeleton mirroring the identity panel's shape while `/me` resolves.
     return (
-      <div className="status is-pending" role="status">
-        <span className="dot" />
-        <span>Loading identity…</span>
+      <div className="me" aria-busy="true">
+        <div className="me-head">
+          <Skeleton width={48} height={48} radius={14} />
+          <div className="me-id">
+            <Skeleton width={170} height={15} />
+            <Skeleton width={92} height={22} radius={999} />
+          </div>
+        </div>
+        <div className="chips">
+          <Skeleton width={70} height={24} radius={999} />
+          <Skeleton width={54} height={24} radius={999} />
+        </div>
       </div>
     );
   }
@@ -86,10 +92,6 @@ export default function Me({ onSignOut }: { onSignOut: () => void }) {
       )}
 
       <div className="me-firm">Firm · Kanbrick (V1 — per-company scope in P14)</div>
-
-      <button className="btn-secondary" onClick={onSignOut}>
-        Sign out
-      </button>
     </div>
   );
 }

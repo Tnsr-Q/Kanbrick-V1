@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   getSidecarStatus,
   logout,
+  me,
   onSidecarStatus,
   sessionRefresh,
+  type Identity,
   type SidecarStatus,
 } from "./api";
 import Login from "./Login";
@@ -14,6 +16,7 @@ import Visualizer from "./Visualizer";
 import Messenger from "./Messenger";
 import LoopRunner from "./LoopRunner";
 import SkillStudio from "./SkillStudio";
+import Shell, { type View } from "./Shell";
 import "./App.css";
 
 const SIDECAR_COPY = {
@@ -31,18 +34,38 @@ const SIDECAR_TONE = {
 /** `unknown` while the held token is being validated against `/me` (P7.4). */
 type Auth = "unknown" | "in" | "out";
 
+/** Map the active nav destination to its panel. The shell stays mounted around it,
+ * so only the panel swaps when navigating. */
+function renderView(view: View): ReactNode {
+  switch (view) {
+    case "home":
+      return (
+        <section className="card home">
+          <h1>Welcome to the Cockpit</h1>
+          <p className="subtitle">L5 · Agentic Desktop on the Firm OS spine</p>
+          <Me />
+        </section>
+      );
+    case "loops":
+      return <LoopRunner />;
+    case "skills":
+      return <SkillStudio />;
+    case "visualizer":
+      return <Visualizer />;
+    case "messenger":
+      return <Messenger />;
+    case "providers":
+      return <Providers />;
+    case "spikes":
+      return <Spikes />;
+  }
+}
+
 export default function App() {
   const [sidecar, setSidecar] = useState<SidecarStatus>({ state: "starting" });
   const [auth, setAuth] = useState<Auth>("unknown");
-  const [view, setView] = useState<
-    | "main"
-    | "spikes"
-    | "providers"
-    | "visualizer"
-    | "messenger"
-    | "loops"
-    | "skills"
-  >("main");
+  const [view, setView] = useState<View>("home");
+  const [identity, setIdentity] = useState<Identity | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -79,68 +102,47 @@ export default function App() {
     };
   }, [sidecar.state]);
 
+  // Identity for the shell's footer (email + clearance). Host-side via the auth
+  // bridge; the webview only renders what the host sends (ADR-0016).
+  useEffect(() => {
+    if (auth !== "in") {
+      setIdentity(null);
+      return;
+    }
+    let active = true;
+    me()
+      .then((id) => active && setIdentity(id))
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [auth]);
+
   const signOut = async () => {
     try {
       await logout();
     } finally {
       setAuth("out");
+      setView("home");
     }
   };
 
-  // P9.4 (#104) BYO-AI streaming console — its own wider surface.
-  if (view === "providers") {
+  // Signed in → the persistent nav shell wraps the active view.
+  if (sidecar.state === "ready" && auth === "in") {
     return (
-      <main className="splash spikes-view">
-        <Providers onBack={() => setView("main")} />
-      </main>
+      <Shell
+        view={view}
+        onNavigate={setView}
+        email={identity?.email ?? null}
+        clearance={identity?.clearance ?? null}
+        onSignOut={signOut}
+      >
+        {renderView(view)}
+      </Shell>
     );
   }
 
-  // P10.3 (#115) messenger + whiteboard + tasks — its own wider surface.
-  if (view === "messenger") {
-    return (
-      <main className="splash spikes-view">
-        <Messenger onBack={() => setView("main")} />
-      </main>
-    );
-  }
-
-  // P10.5 (#117) live component visualizer — its own wider surface.
-  if (view === "visualizer") {
-    return (
-      <main className="splash spikes-view">
-        <Visualizer onBack={() => setView("main")} />
-      </main>
-    );
-  }
-
-  // P11.7 loop run-and-watch — its own wider surface.
-  if (view === "loops") {
-    return (
-      <main className="splash spikes-view">
-        <LoopRunner onBack={() => setView("main")} />
-      </main>
-    );
-  }
-
-  // P11.6 skill authoring + library + loop builder — its own wider surface.
-  if (view === "skills") {
-    return (
-      <main className="splash spikes-view">
-        <SkillStudio onBack={() => setView("main")} />
-      </main>
-    );
-  }
-
-  // P8.5 (#97) frontend de-risk spike — a separate, wider surface for ADR-0011.
-  if (view === "spikes") {
-    return (
-      <main className="splash spikes-view">
-        <Spikes onBack={() => setView("main")} />
-      </main>
-    );
-  }
-
+  // Pre-auth (sidecar booting, session check, or signed out) → the splash.
   return (
     <main className="splash">
       <div className="glow" aria-hidden="true" />
@@ -166,8 +168,6 @@ export default function App() {
             <span className="dot" />
             <span>Checking session…</span>
           </div>
-        ) : auth === "in" ? (
-          <Me onSignOut={signOut} />
         ) : (
           <Login onAuthenticated={() => setAuth("in")} />
         )}
@@ -176,34 +176,6 @@ export default function App() {
           <span>Tauri v2</span>
           <span aria-hidden="true">·</span>
           <span>React + Vite</span>
-          {auth === "in" && (
-            <>
-              <span aria-hidden="true">·</span>
-              <button className="link-btn" onClick={() => setView("providers")}>
-                BYO-AI (P9.4)
-              </button>
-              <span aria-hidden="true">·</span>
-              <button className="link-btn" onClick={() => setView("visualizer")}>
-                Visualizer (P10.5)
-              </button>
-              <span aria-hidden="true">·</span>
-              <button className="link-btn" onClick={() => setView("messenger")}>
-                Messenger (P10.3)
-              </button>
-              <span aria-hidden="true">·</span>
-              <button className="link-btn" onClick={() => setView("loops")}>
-                Loops (P11.7)
-              </button>
-              <span aria-hidden="true">·</span>
-              <button className="link-btn" onClick={() => setView("skills")}>
-                Skill Studio (P11.6)
-              </button>
-            </>
-          )}
-          <span aria-hidden="true">·</span>
-          <button className="link-btn" onClick={() => setView("spikes")}>
-            UI spikes (P8.5)
-          </button>
         </footer>
       </section>
     </main>

@@ -23,6 +23,8 @@ import {
   type ReviewDecision,
   type SkillVersion,
 } from "./api";
+import { useToast } from "./Toast";
+import { SkeletonRows } from "./Skeleton";
 
 /** A clearance level for the author form / kind selects. */
 const CLEARANCES = ["L1", "L2", "L3", "L4", "L5"] as const;
@@ -71,19 +73,20 @@ function composeSkillMd(f: {
   );
 }
 
-export default function SkillStudio({ onBack }: { onBack: () => void }) {
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+export default function SkillStudio() {
+  const toast = useToast();
 
   // ── Library ───────────────────────────────────────────────────────────────
   const [skills, setSkills] = useState<SkillVersion[]>([]);
+  const [skillsLoaded, setSkillsLoaded] = useState(false);
   const [historyFor, setHistoryFor] = useState<string | null>(null);
   const [history, setHistory] = useState<SkillVersion[]>([]);
 
   const refreshSkills = () => {
     listSkills()
       .then(setSkills)
-      .catch((e) => setError(String(e)));
+      .catch((e) => toast.error(String(e)))
+      .finally(() => setSkillsLoaded(true));
   };
   useEffect(refreshSkills, []);
 
@@ -97,7 +100,7 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
       setHistory(await skillHistory(name));
       setHistoryFor(name);
     } catch (e) {
-      setError(String(e));
+      toast.error(String(e));
     }
   };
 
@@ -121,17 +124,15 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
     version: string,
     decision: ReviewDecision,
   ) => {
-    setError(null);
-    setNotice(null);
     try {
       await reviewSkill(name, version, decision);
-      setNotice(
+      toast.success(
         `Skill ${name}@${version} ${decision === "approve" ? "approved" : "rejected"}.`,
       );
       refreshReviews();
       refreshSkills();
     } catch (e) {
-      setError(String(e));
+      toast.error(String(e));
     }
   };
 
@@ -149,8 +150,6 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
 
   const onPublish = async () => {
     if (!canPublish || publishing) return;
-    setError(null);
-    setNotice(null);
     setPublishing(true);
     try {
       const skillMd = composeSkillMd({
@@ -162,13 +161,13 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
         body: aBody.trim() || `# ${aName.trim()}`,
       });
       const published = await publishSkill(skillMd);
-      setNotice(
+      toast.success(
         `Published ${published.skill_name}@${published.version} ` +
           `(seq ${published.seq}, by ${published.source}).`,
       );
       refreshSkills();
     } catch (e) {
-      setError(String(e));
+      toast.error(String(e));
     } finally {
       setPublishing(false);
     }
@@ -181,16 +180,15 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
 
   const onLoadScopes = async () => {
     if (project.trim() === "" || loadingScopes) return;
-    setError(null);
     setLoadingScopes(true);
     try {
       const found = await listScopes(project.trim());
       setScopes(found);
       if (found.length === 0) {
-        setNotice(`No active scopes for "${project.trim()}".`);
+        toast.info(`No active scopes for "${project.trim()}".`);
       }
     } catch (e) {
-      setError(String(e));
+      toast.error(String(e));
     } finally {
       setLoadingScopes(false);
     }
@@ -204,8 +202,6 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
 
   const onBind = async () => {
     if (binding || bindName === "" || bindScope === "") return;
-    setError(null);
-    setNotice(null);
     setBinding(true);
     try {
       const bound = await bindSkill(
@@ -213,11 +209,11 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
         bindName,
         bindVersion.trim() || undefined,
       );
-      setNotice(
+      toast.success(
         `Bound ${bound.name} (floor ${bound.required_clearance}) onto scope ${bound.scope_id}.`,
       );
     } catch (e) {
-      setError(String(e));
+      toast.error(String(e));
     } finally {
       setBinding(false);
     }
@@ -258,8 +254,6 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
 
   const onCreateLoop = async () => {
     if (!canCreate || creating) return;
-    setError(null);
-    setNotice(null);
     setCreating(true);
     try {
       const specs: LoopStepSpec[] = steps.map((s) => {
@@ -273,14 +267,14 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
         return base;
       });
       const created = await createLoop(loopName.trim(), specs);
-      setNotice(
+      toast.success(
         `Created loop "${created.name}" with ${created.steps.length} step` +
           `${created.steps.length === 1 ? "" : "s"} — run it in the Loops panel.`,
       );
       setSteps([]);
       setLoopName("");
     } catch (e) {
-      setError(String(e));
+      toast.error(String(e));
     } finally {
       setCreating(false);
     }
@@ -288,14 +282,8 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
 
   return (
     <section className="card skill-studio">
-      <button className="link-btn back" onClick={onBack}>
-        ← Back
-      </button>
       <h1>Skill Studio</h1>
       <p className="subtitle">Author skills, bind them onto scopes, and build loops</p>
-
-      {error && <p className="error">{error}</p>}
-      {notice && <p className="notice">{notice}</p>}
 
       {/* ── Author ─────────────────────────────────────────────────────────── */}
       <div className="panel">
@@ -374,7 +362,9 @@ export default function SkillStudio({ onBack }: { onBack: () => void }) {
             Refresh
           </button>
         </div>
-        {skills.length === 0 ? (
+        {!skillsLoaded ? (
+          <SkeletonRows rows={3} />
+        ) : skills.length === 0 ? (
           <p className="hint">No published skills yet — author one above.</p>
         ) : (
           <ul className="skill-list">

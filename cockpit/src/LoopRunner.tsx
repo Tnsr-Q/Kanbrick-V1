@@ -12,6 +12,7 @@ import {
   type RunEvent,
   type RunView,
 } from "./api";
+import { SkeletonRows } from "./Skeleton";
 
 /** Per-step status → the shared status-pill tone. */
 const STEP_TONE: Record<string, string> = {
@@ -47,11 +48,12 @@ function stepKind(s: {
   return { kind: "guest", detail: "" };
 }
 
-export default function LoopRunner({ onBack }: { onBack: () => void }) {
+export default function LoopRunner() {
   const [loops, setLoops] = useState<LoopSummary[]>([]);
   const [selected, setSelected] = useState<string>("");
   const [run, setRun] = useState<RunView | null>(null);
   const [running, setRunning] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const watchRef = useRef<string | null>(null);
 
@@ -64,7 +66,8 @@ export default function LoopRunner({ onBack }: { onBack: () => void }) {
         setLoops(ls);
         if (ls.length > 0) setSelected((s) => s || ls[0].loop_id);
       })
-      .catch((e) => active && setError(String(e)));
+      .catch((e) => active && setError(String(e)))
+      .finally(() => active && setLoaded(true));
     return () => {
       active = false;
     };
@@ -116,9 +119,6 @@ export default function LoopRunner({ onBack }: { onBack: () => void }) {
 
   return (
     <section className="card loop-runner">
-      <button className="link-btn back" onClick={onBack}>
-        ← Back
-      </button>
       <h1>Loops</h1>
       <p className="subtitle">
         Run a loop and watch each step
@@ -127,7 +127,9 @@ export default function LoopRunner({ onBack }: { onBack: () => void }) {
 
       {error && <p className="error">{error}</p>}
 
-      {loops.length === 0 ? (
+      {!loaded && !error ? (
+        <SkeletonRows rows={3} />
+      ) : loops.length === 0 ? (
         <p className="hint">
           No loops yet. Author one via the API (<code>POST /me/loops</code>), then
           run it here.
