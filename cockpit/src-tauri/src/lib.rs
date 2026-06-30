@@ -36,6 +36,10 @@ pub fn run() {
         .manage(VisualizerHub::default())
         .manage(MessengerHub::default())
         .manage(LoopRunnerHub::default())
+        // One shared HTTP client for every host→sidecar call (auth bridge + watch
+        // polls). `reqwest::Client` is an Arc-backed connection pool; reusing it keeps
+        // localhost keep-alive instead of a fresh TCP handshake per call/poll-tick.
+        .manage(reqwest::Client::new())
         .invoke_handler(tauri::generate_handler![
             sidecar::sidecar_status,
             auth::login,

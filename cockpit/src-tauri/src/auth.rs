@@ -71,7 +71,11 @@ pub async fn login(app: AppHandle, email: String, password: String) -> Result<()
         token: String,
     }
 
-    let response = reqwest::Client::new()
+    // Reuse the shared, connection-pooled client (managed in `run()`); cloning a
+    // `reqwest::Client` is cheap (it shares the pool) and avoids holding the State
+    // guard across the await.
+    let client = app.state::<reqwest::Client>().inner().clone();
+    let response = client
         .post(format!("{base_url}/login"))
         .json(&Body {
             email: &email,
@@ -129,7 +133,8 @@ pub(crate) async fn authed_get(app: &AppHandle, path: &str) -> Result<reqwest::R
         .state::<Session>()
         .token()
         .ok_or_else(|| "not signed in".to_string())?;
-    reqwest::Client::new()
+    let client = app.state::<reqwest::Client>().inner().clone();
+    client
         .get(format!("{base_url}{path}"))
         .bearer_auth(token)
         .send()
@@ -155,7 +160,8 @@ pub(crate) async fn authed_post<B: Serialize + ?Sized>(
         .state::<Session>()
         .token()
         .ok_or_else(|| "not signed in".to_string())?;
-    reqwest::Client::new()
+    let client = app.state::<reqwest::Client>().inner().clone();
+    client
         .post(format!("{base_url}{path}"))
         .bearer_auth(token)
         .json(body)
