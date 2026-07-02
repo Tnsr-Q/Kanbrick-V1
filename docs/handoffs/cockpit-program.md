@@ -69,11 +69,12 @@ behind a Phase-8 probe:
 | P8 — Upstream De-Risk | [#79](https://github.com/Tnsr-Q/Kanbrick-V1/issues/79) | 3,4,5 | **ADRs landed + spikes green** (#93–#99) |
 | P9 — BYO-AI Providers (cloud) | [#80](https://github.com/Tnsr-Q/Kanbrick-V1/issues/80) | 1, 2.3 | **P9.1–9.5 merged · P9.6 egress gate built — phase complete** (#101–#106) |
 | P10 — Messenger + Visualizer | [#81](https://github.com/Tnsr-Q/Kanbrick-V1/issues/81) | 2.1, 2.2 | **P10.1–P10.7 merged (#120–#126) — phase complete end to end** |
-| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton **complete** (#127–#131); P11.4 provider steps (#132, ADR-0019); P11.5 MCP tool steps (#134, ADR-0020); P11.6 authoring/library/loop-builder UI (#135); **P11.8 skill-publish trust gate in flight** (ADR-0021) — closes the phase |
+| P11 — Skill/Loop Ecosystem | [#82](https://github.com/Tnsr-Q/Kanbrick-V1/issues/82) | 2.3, 2.5 | walking-skeleton **complete** (#127–#131); P11.4 provider steps (#132, ADR-0019); P11.5 MCP tool steps (#134, ADR-0020); P11.6 authoring/library/loop-builder UI (#135); P11.8 skill-publish trust gate (#136, ADR-0021) — **phase complete end to end** (follow-up polish #137–#146) |
 | P12 — Token Tracking + Approval | [#83](https://github.com/Tnsr-Q/Kanbrick-V1/issues/83) | 2.4 | slices enumerated in epic |
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
 | P14 — Multi-Tenant | [#85](https://github.com/Tnsr-Q/Kanbrick-V1/issues/85) | 7 | slices enumerated in epic |
 | P15 — Local model serving (deferred) | [#86](https://github.com/Tnsr-Q/Kanbrick-V1/issues/86) | 1 | tracking epic |
+| P16 — Governed Autonomy | [#148](https://github.com/Tnsr-Q/Kanbrick-V1/issues/148) | 2.3, 2.5 (loop recurrence + governance) | **PRD merged** ([`docs/prd/phase-16-governed-autonomy.md`](../prd/phase-16-governed-autonomy.md), #147); slices filed #149–#156 — ordering is **forced**: P16.1–P16.3 (seal guest write channel · durable runs · proposals/`report_only` default) precede P16.5 (cadence + owner-of-record + kill switch, atomic); P16.6 amends #83 |
 
 **P7 (Shell):** #87 scaffold · #88 sidecar bundle · #89 login+JWT custody · #90 IPC auth
 contract (ADR-0016) · #91 `/me` panel · #92 CI e2e.
@@ -288,8 +289,21 @@ queue. **Author-pinning** closes the P11.2b gap: only a name's owner (or an L5) 
 a different author is refused at publish (403), so no one can overwrite another's `source`/`guest`/`min_clearance`.
 A Cockpit reviewer surface (pending queue + approve/reject) ships alongside, and the library shows each edition's
 review status. Identity stays host-side throughout (ADR-0002/0016). Already-bound grants are unaffected (the run
-gate reads the `(:Skill)` snapshot, not the registry). **P11.8 in flight — Phase 11 (Skill/Loop Ecosystem,
-Req 2.3/2.5) complete once it merges.**
+gate reads the `(:Skill)` snapshot, not the registry). **P11.8 merged as [#136] — Phase 11 (Skill/Loop
+Ecosystem, Req 2.3/2.5) is complete end to end** (follow-up polish — SkillStudio tabs/history, LoopRunner
+step-kind badges, nav shell, error boundary, run-registry bounds — merged via #137–#146).
+
+**P16 (Governed Autonomy) is scoped (2026-07-02):** the hardened PRD
+([`docs/prd/phase-16-governed-autonomy.md`](../prd/phase-16-governed-autonomy.md), merged via #147) turns the
+Phase-11 loop *body* into a governed *loop*: seal the guest graph write channel + fail-closed grant expiry
+(P16.1) → durable `(:LoopRun)`/`(:LoopRunStep)` + origin-attributed evidence (P16.2) → host-written
+`(:Proposal)` draft-vs-committed outputs with a `report_only` default (P16.3) → autonomy ladder
+(`report_only`/`checker_gated`/`unattended`; SKILL.md envelope vs `(:Loop)` operating point; TTL'd dual-gate
+promotion grants; effective = three-way min) (P16.4) → cadence + owner-of-record + kill switch as one atomic
+slice on the existing `Scheduler` interval primitives (P16.5) → per-loop ledger attribution + step-boundary
+hard stop, composing with epic #83 (P16.6) → maker/checker as the `checker_gated` promotion gate, pull-based
+(P16.7) → thin Cockpit surfaces incl. the missing grant approval inbox (P16.8). Epic #148, slices #149–#156;
+ADRs 0022–0024 authored in-slice; no new skills/agents/tools/guests/run fabric.
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator

@@ -119,7 +119,7 @@ These guests compile to `wasm32-wasip1` and run under a locked-down WASI configu
 ├── kanbrick-providers/     # Provider abstraction layer for BYO-AI/provider steps
 ├── kanbrick-tokens/        # Token ledger / budgeting layer
 ├── kanbrick-egress/        # Egress gate / DLP / RBAC layer
-├── kanbrick-loops/         # Skill/loop domain model, currently SKILL.md manifest parsing
+├── kanbrick-loops/         # Skill/loop domain model: SKILL.md manifest parse/render (run engine lives in kanbrick-api)
 ├── guests/                 # Business guests and reference/test guests
 ├── cockpit/                # Tauri v2 desktop app (separate build graph)
 ├── crates/                 # Vendored upstream submodules
@@ -247,7 +247,7 @@ The guest author’s typed interface to the host ABI. Guests use this to:
 
 ### `kanbrick-loops`
 
-Defines the initial domain model for the skill/loop ecosystem. Today it primarily implements parsing and rendering of `SKILL.md` manifests:
+The pure domain layer of the skill/loop ecosystem — deliberately a small crate (deps: `kanbrick-core`, serde, thiserror) that parses and renders `SKILL.md` manifests:
 
 - frontmatter parsing,
 - clearance vocabulary,
@@ -255,7 +255,7 @@ Defines the initial domain model for the skill/loop ecosystem. Today it primaril
 - versioning,
 - body/instruction storage.
 
-Persistence of those manifests as graph entities lives elsewhere (`kanbrick-store` / `kanbrick-api`).
+The rest of the ecosystem is deliberately split across the spine: persistence of skills and loops as graph entities lives in `kanbrick-store` (`skill_registry`, `loop_registry`), and the **loop run engine** lives in `kanbrick-api` (`src/loops.rs`) — a sequential executor over `(:Loop)`/`(:LoopStep)` pipelines with three polymorphic step kinds (WASM guest on the mesh `Scheduler`, provider/LLM completion with host-resolved keys, MCP tool call under a minted-then-revoked capability), each step gated just-in-time by `ScopeGrants::authorize_skill` (ADR-0013/0019/0020). The next stage — recurrence, autonomy levels, proposals, budgets, and a kill switch — is scoped in [`docs/prd/phase-16-governed-autonomy.md`](docs/prd/phase-16-governed-autonomy.md).
 
 ### `kanbrick-providers`, `kanbrick-tokens`, `kanbrick-egress`
 
