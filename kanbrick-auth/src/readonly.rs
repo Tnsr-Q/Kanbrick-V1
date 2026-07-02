@@ -3,42 +3,83 @@
 //! [`ensure_read_only`] refuses any Cypher statement that could mutate the
 //! graph before it reaches the store. The guest `query_graph` host import is a
 //! *read* channel by contract (README / docs/SECURITY.md); the host is the
-//! graph's only writer. The classifier is deliberately **fail-closed**:
+//! graph's only writer.
 //!
-//! * write-clause keywords are matched as whole word tokens anywhere outside
-//!   string literals and backtick-quoted identifiers — a keyword carried as
-//!   data (`'MERGE'`) passes, while a keyword-shaped bare property access
-//!   (`n.set`) is refused: a false positive we accept over any false negative
-//!   (backtick the identifier to read such a property);
-//! * a **comment** (`//` or `/* … */`) in a guest statement is refused
-//!   outright, not stripped. A host-generated read query never needs one, and
-//!   refusing them removes any dependence on how the pinned engine's lexer
-//!   treats a comment that splits a keyword (`CRE/**/ATE`) — the whole class is
-//!   simply rejected;
-//! * an unterminated string literal is unclassifiable and is refused too.
+//! This is a scanner in front of the engine, so its soundness rests on its
+//! tokenization agreeing with SparrowDB's lexer (see ADR-0022 "Residual risk").
+//! Every rule below is chosen to eliminate a way the two could *disagree*, and
+//! to fail closed when they might:
+//!
+//! * a **backslash** anywhere is refused. The only place `\` matters is string
+//!   escaping, and whether an engine honors `\'` is exactly the ambiguity that
+//!   lets a crafted literal end in one lexer and not the other (a write clause
+//!   hidden inside what the scanner thinks is still a string). With no
+//!   backslash present, `'…'` is simply the text between matching quotes for
+//!   *any* lexer, so scanner and engine cannot desync. A read query never needs
+//!   one;
+//! * a **comment** (`//` or `/* … */`) is refused outright, not stripped —
+//!   removing any dependence on whether the engine treats a keyword-splitting
+//!   comment (`CRE/**/ATE`) as a separator or elides it;
+//! * the statement must **begin with a read-only opening clause** (an
+//!   allowlist: `MATCH` / `OPTIONAL` / `WITH` / `UNWIND` / `RETURN`). A verb the
+//!   engine might support but this module has never heard of therefore fails
+//!   closed as a leading clause, rather than slipping past the write denylist;
+//! * write-clause keywords are then matched as whole word tokens outside string
+//!   literals and backtick identifiers — a keyword carried as data (`'MERGE'`)
+//!   passes, a keyword-shaped bare property (`n.set`) is refused (a false
+//!   positive we accept over any false negative; backtick it to read it);
+//! * an unterminated string literal is unclassifiable and refused too.
 
 use kanbrick_core::{Error, Result};
 
 /// Cypher write/DDL vocabulary. The pinned SparrowDB dialect (ADR-0001) only
 /// executes a subset of these today (`CREATE`/`MERGE`/`SET`/`DELETE`); the rest
 /// are refused anyway so the gate stays closed if the engine grows support.
+/// This is a denylist and so cannot be exhaustive by itself — the leading-clause
+/// allowlist ([`READ_OPENERS`]) is what closes an *unknown* write verb.
 const WRITE_KEYWORDS: &[&str] = &[
     "CREATE", "MERGE", "SET", "DELETE", "DETACH", "REMOVE", "DROP", "FOREACH", "LOAD", "CALL",
 ];
 
+/// The only clause keywords a read-only statement may **begin** with. Anything
+/// else is refused before the denylist scan, so a write verb this module does
+/// not know cannot lead a statement. (`CALL` is deliberately absent — a bare
+/// procedure call is on the write denylist.)
+const READ_OPENERS: &[&str] = &["MATCH", "OPTIONAL", "WITH", "UNWIND", "RETURN"];
+
 /// Refuse `cypher` unless it is provably free of write clauses.
 pub(crate) fn ensure_read_only(cypher: &str) -> Result<()> {
+    // A backslash only matters as a string escape, which is the one lexical
+    // rule most likely to differ between this scanner and the engine — refuse
+    // it so string boundaries are unambiguous for both (see the module doc).
+    if cypher.contains('\\') {
+        return Err(refused("backslash"));
+    }
     let scannable = strip_opaque_regions(cypher)?;
+
+    let mut opener_checked = false;
     let mut word = String::new();
     for ch in scannable.chars().chain(std::iter::once(' ')) {
         if ch.is_ascii_alphanumeric() || ch == '_' {
             word.push(ch.to_ascii_uppercase());
         } else if !word.is_empty() {
+            if !opener_checked {
+                if !READ_OPENERS.contains(&word.as_str()) {
+                    return Err(refused(&format!(
+                        "statement must open with a read clause, not {word}"
+                    )));
+                }
+                opener_checked = true;
+            }
             if WRITE_KEYWORDS.contains(&word.as_str()) {
                 return Err(refused(&format!("write clause {word}")));
             }
             word.clear();
         }
+    }
+    if !opener_checked {
+        // No clause keyword at all (empty / whitespace / only punctuation).
+        return Err(refused("no read clause"));
     }
     Ok(())
 }
@@ -47,11 +88,13 @@ fn refused(what: &str) -> Error {
     Error::Auth(format!("read-only guest graph channel: {what} refused"))
 }
 
-/// Blank out string literals (`'…'` / `"…"` with backslash escapes) and
-/// backtick identifiers so the keyword scan only sees executable clause
-/// positions. A comment marker (`//` or `/*`) is **refused**, not stripped
-/// (see the module doc). An unterminated string literal is refused too — a
-/// statement we cannot classify never runs (fail closed).
+/// Blank out string literals (`'…'` / `"…"`) and backtick identifiers so the
+/// keyword scan only sees executable clause positions. Backslashes are already
+/// refused by [`ensure_read_only`], so a literal is unambiguously the text
+/// between matching quotes — no escape handling, no scanner/engine desync. A
+/// comment marker (`//` or `/*`) is **refused**, not stripped. An unterminated
+/// quoted region is refused too — a statement we cannot classify never runs
+/// (fail closed).
 fn strip_opaque_regions(cypher: &str) -> Result<String> {
     let mut out = String::with_capacity(cypher.len());
     let mut chars = cypher.chars().peekable();
@@ -59,19 +102,7 @@ fn strip_opaque_regions(cypher: &str) -> Result<String> {
         match ch {
             '\'' | '"' | '`' => {
                 let quote = ch;
-                let mut terminated = false;
-                let mut escaped = false;
-                for c in chars.by_ref() {
-                    if escaped {
-                        escaped = false;
-                    } else if c == '\\' && quote != '`' {
-                        escaped = true;
-                    } else if c == quote {
-                        terminated = true;
-                        break;
-                    }
-                }
-                if !terminated {
+                if !chars.by_ref().any(|c| c == quote) {
                     return Err(refused("unterminated quoted region"));
                 }
                 out.push(' ');
@@ -134,9 +165,57 @@ mod tests {
         for q in [
             "MATCH (c:Company) WHERE c.note = 'please MERGE this later' RETURN c.company_id",
             "MATCH (c:Company) WHERE c.note = \"SET for review\" RETURN c.company_id",
-            "MATCH (c:Company) WHERE c.note = 'it\\'s DELETE season' RETURN c.company_id",
         ] {
             assert!(ensure_read_only(q).is_ok(), "literal is data: {q}");
+        }
+    }
+
+    #[test]
+    fn a_leading_verb_that_is_not_a_read_clause_fails_closed() {
+        // The denylist can never be exhaustive; the leading-clause allowlist is
+        // what refuses a write verb this module has never heard of, rather than
+        // letting it open a statement (ADR-0022 finding 3).
+        for q in [
+            "INSERT (n:X)",
+            "UPSERT (n:X)",
+            "GRANT read TO n",
+            "  \n  ", // no clause at all → refused
+            "42 RETURN n",
+        ] {
+            assert_eq!(
+                refused_kind(q),
+                ErrorKind::Unauthorized,
+                "should refuse non-read opener: {q}"
+            );
+        }
+        // Every legitimate read opener is accepted.
+        for q in [
+            "MATCH (n) RETURN n.email",
+            "OPTIONAL MATCH (n) RETURN n.email",
+            "WITH 1 AS x RETURN x",
+            "UNWIND [1, 2] AS n RETURN n",
+            "RETURN 1",
+        ] {
+            assert!(ensure_read_only(q).is_ok(), "read opener allowed: {q}");
+        }
+    }
+
+    #[test]
+    fn a_backslash_anywhere_is_refused() {
+        // A backslash only matters as a string escape — the one lexical rule
+        // most likely to differ between this scanner and the engine, which is
+        // exactly the desync a crafted `'x\' DELETE n //'` would exploit
+        // (ADR-0022 finding 1). Refusing it makes string boundaries unambiguous.
+        for q in [
+            r"MATCH (n) WHERE n.a = 'x\' DELETE n //'",
+            r"MATCH (n) WHERE n.a = 'c:\temp' RETURN n",
+            r"MATCH (n) RETURN n.\`weird\`",
+        ] {
+            assert_eq!(
+                refused_kind(q),
+                ErrorKind::Unauthorized,
+                "should refuse backslash: {q}"
+            );
         }
     }
 

@@ -38,18 +38,32 @@ make them load-bearing:
 
 1. **The guest graph channel is read-only, enforced fail-closed at the single
    choke point.** A `readonly` classifier in `kanbrick-auth` runs before any
-   guest statement reaches the store: string literals, backtick identifiers,
-   and comments are blanked (unterminated regions are refused outright), then
-   any whole-word match against the Cypher write/DDL vocabulary
-   (`CREATE MERGE SET DELETE DETACH REMOVE DROP FOREACH LOAD CALL`) refuses the
-   statement with an `Unauthorized`-kind error. The gate lives inside
-   `GuardedStore::query_graph`, so it covers **both** guest paths at once —
-   in-process (`LocalHostServices`) and the executor split
-   (`/internal/graph/query`). False positives are accepted by design: a bare
-   keyword-shaped property (`n.set`) is refused; the documented workaround is a
-   backtick-quoted identifier (`` n.`set` ``). The keyword set is deliberately
-   wider than what the pinned SparrowDB dialect executes today (ADR-0001), so
-   the gate stays closed if the engine grows support.
+   guest statement reaches the store, inside `GuardedStore::query_graph`, so it
+   covers **both** guest paths at once — in-process (`LocalHostServices`) and
+   the executor split (`/internal/graph/query`). It applies four fail-closed
+   rules, layered so that no single lexical assumption is load-bearing:
+   - **Backslash refused anywhere.** A `\` only matters as a string escape, and
+     whether the engine honors `\'` is precisely the ambiguity that lets a
+     crafted literal (`'x\' DELETE n //'`) terminate in one lexer but not the
+     other, hiding a write clause. With no backslash present, `'…'` is simply
+     the text between matching quotes for *any* lexer, so the scanner and the
+     engine cannot desync on string boundaries. A read query never needs one.
+   - **Comments refused outright** (`//`, `/* … */`), not stripped — removing
+     any dependence on whether the engine treats a keyword-splitting comment
+     (`CRE/**/ATE`) as a token separator or elides it.
+   - **Leading clause allowlisted.** After blanking string/backtick regions, the
+     statement must *begin* with a read-only opener
+     (`MATCH OPTIONAL WITH UNWIND RETURN`). A write verb the classifier has never
+     heard of therefore fails closed as a leading clause instead of slipping
+     past the denylist — this is what makes the control robust to a denylist
+     that cannot be exhaustive.
+   - **Write/DDL denylist.** Any remaining whole-word match against
+     `CREATE MERGE SET DELETE DETACH REMOVE DROP FOREACH LOAD CALL` (wider than
+     what the pinned dialect executes today, ADR-0001) refuses the statement.
+
+   All refusals return an `Unauthorized`-kind error. False positives are
+   accepted by design: a bare keyword-shaped property (`n.set`) is refused; the
+   documented workaround is a backtick-quoted identifier (`` n.`set` ``).
 
 2. **Refusals are audited.** A refused statement records an audit entry under
    the caller with a `guest-query-refused:` marker prefix before the error
@@ -94,3 +108,25 @@ make them load-bearing:
   false positive has a backtick workaround; a false negative would be a
   security hole. If the dialect ever needs finer classification, tighten
   toward a parse-level allowlist, never toward narrowing the keyword scan.
+
+### Residual risk — scanner/engine coupling (not eliminated, bounded)
+
+This is a scanner in front of the engine, so its soundness ultimately rests on
+its tokenization agreeing with the pinned SparrowDB lexer, which is **not
+verifiable in this environment** (the `crates/sparrowdb` submodule is not
+checked out — the clone is proxy-blocked 403 — and GitHub access is scoped to
+this repo). Adversarial review surfaced the coupling as the core risk. The four
+rules above are chosen specifically to remove the ways scanner and engine could
+disagree: the two highest-severity vectors were a **string-escape desync**
+(closed by refusing backslashes) and a **comment-separator desync** (closed by
+refusing comments), and the **denylist-is-not-exhaustive** seam is closed for
+leading clauses by the allowlist. What remains is a hypothetical write verb that
+SparrowDB executes, that is absent from the denylist, **and** appears only as a
+non-leading clause — which requires the engine to support a mutation the ADR-0001
+dialect audit did not find. The proper long-term control, when the submodule is
+available, is one of: (a) a SparrowDB read-only execute handle / transaction so
+the boundary is engine-enforced and cannot desync from the parser; or (b) a
+lexer-parity test that runs the classifier's allow/refuse corpus against the
+real engine and asserts agreement. Until then, this classifier is the control,
+with the coupling documented here and regression-guarded by the module's test
+suite. **Tracked as follow-up on epic #148.**
