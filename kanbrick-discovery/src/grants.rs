@@ -685,13 +685,16 @@ fn split_ids(s: &str) -> Vec<String> {
     }
 }
 
-/// Whether `expires_at` (RFC3339) is strictly before `now`. A missing/blank or
-/// unparseable expiry never expires.
+/// Whether `expires_at` (RFC3339) is strictly before `now`. A missing/blank
+/// expiry never expires (an explicitly open-ended grant); an **unparseable**
+/// expiry reads as expired — fail closed (P16.1, ADR-0022), because a grant
+/// whose sunset cannot be read must not confer standing authority (autonomy
+/// promotion rides grant TTLs from P16.4 on).
 fn is_expired(expires_at: &Option<String>, now: DateTime<Utc>) -> bool {
     match expires_at.as_deref() {
         Some(s) if !s.is_empty() => DateTime::parse_from_rfc3339(s)
             .map(|exp| exp.with_timezone(&Utc) < now)
-            .unwrap_or(false),
+            .unwrap_or(true),
         _ => false,
     }
 }
@@ -894,6 +897,71 @@ mod tests {
             svc.request(&req.id).unwrap().unwrap().status,
             RequestStatus::Expired
         );
+    }
+
+    #[test]
+    fn expiry_is_fail_closed_on_unparseable_timestamps() {
+        let now = Utc::now();
+        // Missing/blank = an explicitly open-ended grant: never expires.
+        assert!(!is_expired(&None, now));
+        assert!(!is_expired(&Some(String::new()), now));
+        // A readable future expiry is not expired; a past one is.
+        let future = (now + chrono::Duration::days(1)).to_rfc3339();
+        assert!(!is_expired(&Some(future), now));
+        let past = (now - chrono::Duration::days(1)).to_rfc3339();
+        assert!(is_expired(&Some(past), now));
+        // An unreadable expiry can no longer mean "never expires" (P16.1,
+        // ADR-0022): a sunset that cannot be parsed reads as already past.
+        assert!(is_expired(&Some("not-a-timestamp".to_string()), now));
+        assert!(is_expired(&Some("2026-13-45T99:99:99Z".to_string()), now));
+    }
+
+    #[test]
+    fn a_revoked_scope_stops_authorize_skill_at_the_next_gate() {
+        let (_d, store) = seeded_store();
+        let g = graph_of(&store);
+        let svc = ScopeGrants::new(&store);
+        let now = Utc::now();
+
+        let elena = ctx("elena.ruiz@kanbrick.com", ClearanceLevel::L2);
+        let req = svc
+            .request_scope(&elena, "p2", &[], &["JMTS".to_string()], "j")
+            .unwrap();
+        let tracy = ctx("tracy.brittcool@kanbrick.com", ClearanceLevel::L5);
+        let granted = svc.approve(&req.id, &tracy, &g, Some(30)).unwrap();
+        svc.define_skill(
+            &granted.id,
+            "deal-modeling",
+            "valuation",
+            ClearanceLevel::L2,
+        )
+        .unwrap();
+
+        // The gate passes while the scope is active…
+        svc.authorize_skill(
+            &elena,
+            base_scope(&store, "elena.ruiz@kanbrick.com", ClearanceLevel::L2),
+            &granted.id,
+            "deal-modeling",
+            now,
+        )
+        .unwrap();
+
+        // …and fails at the very next call after a revoke: authorize_skill
+        // re-reads scope status from the store (no cache sits in this path),
+        // which is what propagates a revocation into an in-flight loop at its
+        // next step boundary (P16.1 verification).
+        svc.revoke(&granted.id, &tracy, "pulled", None).unwrap();
+        let err = svc
+            .authorize_skill(
+                &elena,
+                base_scope(&store, "elena.ruiz@kanbrick.com", ClearanceLevel::L2),
+                &granted.id,
+                "deal-modeling",
+                now,
+            )
+            .unwrap_err();
+        assert_eq!(err.kind(), kanbrick_core::ErrorKind::ValidationError);
     }
 
     #[test]

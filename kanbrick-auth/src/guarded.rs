@@ -18,6 +18,7 @@ use kanbrick_store::{CompanyNode, Params, PersonNode, Store};
 use serde_json::Value as JsonValue;
 
 use crate::audit::AuditLog;
+use crate::readonly;
 use crate::scope::ClearanceScope;
 
 /// A store handle bound to one caller, enforcing audit + clearance scoping.
@@ -59,13 +60,25 @@ impl<'a> GuardedStore<'a> {
     /// it, and return the clearance-filtered rows as [`GraphRows`].
     ///
     /// This is the single choke point a guest's `query_graph` host call routes
-    /// through. Parameters are bound (never interpolated), the query text is
-    /// audited, and every returned row is passed through
-    /// [`ClearanceScope::retain_rows`] — the fail-closed generic filter: a person
-    /// row (`email`) or company row (`company_id`) is kept only if visible to the
-    /// caller, and a projection exposing neither key is denied for non-L4/L5
-    /// callers. A guest therefore can never see data above its caller's clearance.
+    /// through — both in-process (`LocalHostServices`) and across the executor
+    /// split (`/internal/graph/query`). The channel is **read-only** (ADR-0022):
+    /// a statement containing a write clause is refused fail-closed *before* it
+    /// reaches the store, and the refusal itself is audited, so the host remains
+    /// the graph's only writer. For statements that pass, parameters are bound
+    /// (never interpolated), the query text is audited, and every returned row
+    /// is passed through [`ClearanceScope::retain_rows`] — the fail-closed
+    /// generic filter: a person row (`email`) or company row (`company_id`) is
+    /// kept only if visible to the caller, and a projection exposing neither key
+    /// is denied for non-L4/L5 callers. A guest therefore can never see data
+    /// above its caller's clearance, and can never mutate the graph at all.
     pub fn query_graph(&self, query: &GraphQuery) -> Result<GraphRows> {
+        if let Err(refused) = readonly::ensure_read_only(&query.cypher) {
+            // The marker prefix distinguishes a refused statement from an
+            // executed one in the audit trail (both store hashes only).
+            AuditLog::new(self.store)
+                .record(self.ctx, &format!("guest-query-refused:{}", query.cypher))?;
+            return Err(refused);
+        }
         AuditLog::new(self.store).record(self.ctx, &query.cypher)?;
         let params = json_params(&query.params)?;
         let rows: Vec<JsonValue> = self.store.query(&query.cypher, params)?;
@@ -294,5 +307,51 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.kind(), kanbrick_core::ErrorKind::ValidationError);
+    }
+
+    // ---- P16.1 / ADR-0022: the guest graph channel is read-only. ----
+
+    #[test]
+    fn query_graph_refuses_writes_fail_closed_and_audits_the_refusal() {
+        let (_d, store) = seeded();
+        // Even an L5 cannot write through the guest channel: read-only is a
+        // property of the channel, not of the caller's clearance.
+        let ceo = ctx_l5();
+        let guarded = GuardedStore::new(&store, &ceo).unwrap();
+
+        let before = guarded
+            .query_graph(&GraphQuery::new(COMPANY_ROSTER))
+            .unwrap();
+        assert_eq!(before.len(), 9);
+
+        // A MERGE that would insert a new company is refused…
+        let err = guarded
+            .query_graph(&GraphQuery::new(
+                "MERGE (c:Company {company_id: 'EVIL', name: 'Evil Co', segment: 'X'})",
+            ))
+            .unwrap_err();
+        assert_eq!(err.kind(), kanbrick_core::ErrorKind::Unauthorized);
+
+        // …as is a SET that would mutate an existing row.
+        let err = guarded
+            .query_graph(&GraphQuery::new(
+                "MATCH (c:Company {company_id: 'KEEP'}) SET c.name = 'pwned'",
+            ))
+            .unwrap_err();
+        assert_eq!(err.kind(), kanbrick_core::ErrorKind::Unauthorized);
+
+        // Neither write landed: the roster is unchanged and KEEP keeps its name.
+        let after = guarded
+            .query_graph(&GraphQuery::new(COMPANY_ROSTER))
+            .unwrap();
+        assert_eq!(after.len(), 9);
+        assert!(after
+            .rows
+            .iter()
+            .all(|row| row["name"].as_str() != Some("pwned")));
+
+        // Every attempt was audited: 2 executed reads + 2 refusals.
+        let audited = AuditLog::new(&store).count_for_user(ceo.user_id).unwrap();
+        assert_eq!(audited, 4, "refused statements are audited too");
     }
 }
