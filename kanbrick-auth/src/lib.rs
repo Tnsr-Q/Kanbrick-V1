@@ -15,7 +15,8 @@
 //! * [`login`] — email + password → JWT login flow (issue #15).
 //! * [`clearance`] — the `require_clearance` gate (issue #16).
 //! * [`scope`] — clearance-scoped data visibility (issue #17).
-//! * [`guarded`] — the audited, clearance-filtering query interceptor (issue #18).
+//! * [`guarded`] — the audited, clearance-filtering query interceptor (issue #18),
+//!   read-only toward guests (P16.1, ADR-0022).
 //! * [`audit`] — per-query audit logging (issue #19).
 //! * [`apikey`] — scoped, rotatable service API keys (issue #20).
 
@@ -26,6 +27,7 @@ pub mod guarded;
 pub mod jwt;
 pub mod login;
 pub mod password;
+mod readonly;
 pub mod scope;
 
 pub use apikey::{ApiKeyService, IssuedKey};

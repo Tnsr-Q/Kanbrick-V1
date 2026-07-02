@@ -74,7 +74,7 @@ behind a Phase-8 probe:
 | P13 — Graphify Access Visualizer | [#84](https://github.com/Tnsr-Q/Kanbrick-V1/issues/84) | 6 | slices enumerated in epic |
 | P14 — Multi-Tenant | [#85](https://github.com/Tnsr-Q/Kanbrick-V1/issues/85) | 7 | slices enumerated in epic |
 | P15 — Local model serving (deferred) | [#86](https://github.com/Tnsr-Q/Kanbrick-V1/issues/86) | 1 | tracking epic |
-| P16 — Governed Autonomy | [#148](https://github.com/Tnsr-Q/Kanbrick-V1/issues/148) | 2.3, 2.5 (loop recurrence + governance) | **PRD merged** ([`docs/prd/phase-16-governed-autonomy.md`](../prd/phase-16-governed-autonomy.md), #147); slices filed #149–#156 — ordering is **forced**: P16.1–P16.3 (seal guest write channel · durable runs · proposals/`report_only` default) precede P16.5 (cadence + owner-of-record + kill switch, atomic); P16.6 amends #83 |
+| P16 — Governed Autonomy | [#148](https://github.com/Tnsr-Q/Kanbrick-V1/issues/148) | 2.3, 2.5 (loop recurrence + governance) | **PRD merged** ([`docs/prd/phase-16-governed-autonomy.md`](../prd/phase-16-governed-autonomy.md), #147); slices filed #149–#156 — ordering is **forced**: P16.1–P16.3 (seal guest write channel · durable runs · proposals/`report_only` default) precede P16.5 (cadence + owner-of-record + kill switch, atomic); P16.6 amends #83. **P16.1 built (#149, ADR-0022)** |
 
 **P7 (Shell):** #87 scaffold · #88 sidecar bundle · #89 login+JWT custody · #90 IPC auth
 contract (ADR-0016) · #91 `/me` panel · #92 CI e2e.
@@ -303,7 +303,13 @@ promotion grants; effective = three-way min) (P16.4) → cadence + owner-of-reco
 slice on the existing `Scheduler` interval primitives (P16.5) → per-loop ledger attribution + step-boundary
 hard stop, composing with epic #83 (P16.6) → maker/checker as the `checker_gated` promotion gate, pull-based
 (P16.7) → thin Cockpit surfaces incl. the missing grant approval inbox (P16.8). Epic #148, slices #149–#156;
-ADRs 0022–0024 authored in-slice; no new skills/agents/tools/guests/run fabric.
+ADRs 0022–0024 authored in-slice; no new skills/agents/tools/guests/run fabric. **P16.1** (#149, ADR-0022)
+is built: a fail-closed read-only classifier in `kanbrick-auth` (`readonly.rs`) gates
+`GuardedStore::query_graph` — the single choke point both guest paths share (in-process and
+`/internal/graph/query`) — refusing any write clause before it reaches the store and auditing the refusal
+(`guest-query-refused:` marker); `is_expired` now reads an unparseable `expires_at` as expired (blank stays
+open-ended, PRD §7.3 pending); and the suspected revoke-cache gap is **verified not a defect** —
+`authorize_skill` re-reads scope status per step, pinned by a revoke→next-gate-fails regression test.
 
 P7 and P8 run in parallel. Feature phases P9–P14 are **fully enumerated** in each epic body
 (#80–#85) and are **filed as discrete issues phase-by-phase as each de-risk lands** (operator
@@ -344,7 +350,9 @@ epic **#79**, so closing a probe surfaces exactly which slices to open next.
 0016 Cockpit IPC auth contract · 0017 BYO-AI egress allowlist+DLP · 0018 ProjectScope
 file/function granularity · 0019 loop provider steps (host-injected key, model-only `provider_ref`) ·
 0020 loop MCP tool-call steps (managed-sidecar bridge, capability passthrough, injected seam) ·
-0021 skill-publish trust gate (bind-time lead review via `eligible_grantor`; author-pinned names).
+0021 skill-publish trust gate (bind-time lead review via `eligible_grantor`; author-pinned names) ·
+0022 read-only guest graph channel (fail-closed write classifier at the `GuardedStore` choke point,
+refusals audited; fail-closed grant expiry; revoke-propagation invariant verified).
 Each ADR is authored alongside its implementing slice (the repo's convention — see ADR-0008 landing
 with Track G).
 

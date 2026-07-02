@@ -240,7 +240,12 @@ pub(crate) async fn revoke_scope(
     Json(body): Json<RevokeBody>,
 ) -> Result<StatusCode, ApiError> {
     let grants = ScopeGrants::new(&state.store);
-    // No discovery answer-cache is wired into the API yet, so nothing to invalidate.
+    // No discovery answer-cache is wired into the API yet, so nothing to invalidate
+    // (verified P16.1/ADR-0022: `authorize_skill` re-reads scope status from the
+    // store at every per-step gate, so a revoke reaches an in-flight loop at its
+    // next step boundary; the AppState `OrgGraphCache` only serves grantor-chain
+    // checks and never scope status). If a `DiscoveryCache` is ever added to
+    // AppState, it must be passed here instead of `None`.
     grants.revoke(&id, &ctx, &body.reason, None)?;
     Ok(StatusCode::NO_CONTENT)
 }
